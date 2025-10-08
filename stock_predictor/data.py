@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import csv
+import math
 import warnings
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, List, Sequence, Tuple
+from typing import Any, Iterable, List, Literal, Sequence, Tuple
 
 try:  # pragma: no cover - importガード
     import yfinance
@@ -73,10 +74,14 @@ def load_price_data(path: str | Path) -> List[PriceRow]:
     return rows
 
 
+AdjustMode = Literal["none", "auto", "manual"]
+
+
 def fetch_price_data_from_yfinance(
     ticker: str,
     period: str = "60d",
     interval: str = "1d",
+    adjust: AdjustMode = "none",
 ) -> List[PriceRow]:
     """yfinanceから株価データを取得し、PriceRow形式に変換する."""
 
@@ -86,13 +91,19 @@ def fetch_price_data_from_yfinance(
     if yfinance is None:
         raise RuntimeError("yfinanceがインストールされていません")
 
+    if adjust not in {"none", "auto", "manual"}:
+        raise ValueError("adjust は 'none'・'auto'・'manual' のいずれかで指定してください")
+
+    auto_adjust = adjust == "auto"
+
     try:
         downloaded = yfinance.download(
             ticker,
             period=period,
             interval=interval,
             progress=False,
-            auto_adjust=False,
+            auto_adjust=auto_adjust,
+            actions=True,
         )
     except Exception as exc:  # pragma: no cover - 例外経路を簡潔に確保
         raise RuntimeError("yfinanceからのデータ取得に失敗しました") from exc
@@ -112,6 +123,27 @@ def fetch_price_data_from_yfinance(
             volume = float(values["Volume"])
         except (KeyError, TypeError, ValueError):
             continue
+
+        adj_close = None
+        if "Adj Close" in values and values["Adj Close"] is not None:
+            try:
+                adj_close = float(values["Adj Close"])
+            except (TypeError, ValueError):
+                adj_close = None
+
+        if adjust == "manual" and adj_close is not None:
+            if close_price == 0:
+                factor = 1.0
+            else:
+                factor = adj_close / close_price
+            if not math.isfinite(factor) or factor <= 0:
+                factor = 1.0
+            open_price *= factor
+            high_price *= factor
+            low_price *= factor
+            close_price = adj_close
+        elif adjust == "auto" and adj_close is not None:
+            close_price = adj_close
 
         rows.append(
             {

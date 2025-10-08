@@ -134,6 +134,137 @@ def test_fetch_price_data_from_yfinance(monkeypatch):
     assert data[1]["Volume"] == 1100
 
 
+def test_fetch_price_data_from_yfinance_with_split_adjustments(monkeypatch):
+    class DummyFrame:
+        def __init__(self, rows):
+            self._rows = rows
+
+        @property
+        def empty(self):
+            return len(self._rows) == 0
+
+        def dropna(self):
+            filtered = [
+                (idx, values)
+                for idx, values in self._rows
+                if all(value is not None for value in values.values())
+            ]
+            return DummyFrame(filtered)
+
+        def iterrows(self):
+            yield from self._rows
+
+    base_rows = [
+        (
+            date(2023, 1, 1),
+            {
+                "Open": 100.0,
+                "High": 110.0,
+                "Low": 90.0,
+                "Close": 100.0,
+                "Adj Close": 50.0,
+                "Volume": 1000,
+                "Stock Splits": 0.0,
+                "Dividends": 0.0,
+            },
+        ),
+        (
+            date(2023, 1, 2),
+            {
+                "Open": 62.0,
+                "High": 64.0,
+                "Low": 58.0,
+                "Close": 60.0,
+                "Adj Close": 60.0,
+                "Volume": 1200,
+                "Stock Splits": 2.0,
+                "Dividends": 0.0,
+            },
+        ),
+        (
+            date(2023, 1, 3),
+            {
+                "Open": 61.5,
+                "High": 63.0,
+                "Low": 59.0,
+                "Close": 61.0,
+                "Adj Close": 60.5,
+                "Volume": 900,
+                "Stock Splits": 0.0,
+                "Dividends": 0.5,
+            },
+        ),
+    ]
+
+    adjusted_rows = [
+        (
+            date(2023, 1, 1),
+            {
+                "Open": 50.0,
+                "High": 55.0,
+                "Low": 45.0,
+                "Close": 50.0,
+                "Adj Close": 50.0,
+                "Volume": 1000,
+            },
+        ),
+        (
+            date(2023, 1, 2),
+            {
+                "Open": 62.0,
+                "High": 64.0,
+                "Low": 58.0,
+                "Close": 60.0,
+                "Adj Close": 60.0,
+                "Volume": 1200,
+            },
+        ),
+        (
+            date(2023, 1, 3),
+            {
+                "Open": 61.5,
+                "High": 63.0,
+                "Low": 59.0,
+                "Close": 60.5,
+                "Adj Close": 60.5,
+                "Volume": 900,
+            },
+        ),
+    ]
+
+    def fake_download(*args, **kwargs):
+        assert kwargs["period"] == "90d"
+        assert kwargs["interval"] == "1d"
+        auto_adjust = kwargs.get("auto_adjust")
+        if auto_adjust:
+            return DummyFrame(adjusted_rows)
+        return DummyFrame(base_rows)
+
+    monkeypatch.setattr(
+        data_module,
+        "yfinance",
+        SimpleNamespace(download=fake_download),
+    )
+
+    unadjusted = fetch_price_data_from_yfinance(
+        "TEST", period="90d", interval="1d", adjust="none"
+    )
+    assert unadjusted[0]["Close"] == 100.0
+    assert unadjusted[1]["Close"] == 60.0
+
+    manual_adjusted = fetch_price_data_from_yfinance(
+        "TEST", period="90d", interval="1d", adjust="manual"
+    )
+    assert manual_adjusted[0]["Close"] == pytest.approx(50.0)
+    assert manual_adjusted[0]["Open"] == pytest.approx(50.0)
+    assert manual_adjusted[2]["Close"] == pytest.approx(60.5)
+
+    auto_adjusted = fetch_price_data_from_yfinance(
+        "TEST", period="90d", interval="1d", adjust="auto"
+    )
+    assert auto_adjusted[0]["Close"] == pytest.approx(50.0)
+    assert auto_adjusted[2]["Close"] == pytest.approx(60.5)
+
 def test_build_feature_matrix_skips_volume_zscore_when_insufficient_data():
     prices = [
         {

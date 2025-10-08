@@ -232,9 +232,7 @@ def build_feature_dataset(
 
     # 出来高のZスコア(5日)
     window = 5
-    if len(volumes) < window:
-        volume_z = [float("nan")] * len(volumes)
-    else:
+    if len(volumes) >= window:
         volume_z = []
         for i in range(len(volumes)):
             if i + 1 < window:
@@ -245,8 +243,8 @@ def build_feature_dataset(
             variance = sum((x - mean) ** 2 for x in segment) / window
             std = variance ** 0.5
             volume_z.append((volumes[i] - mean) / std if std != 0 else 0.0)
-    feature_columns.append(volume_z)
-    feature_names.append("volume_zscore_5")
+        feature_columns.append(volume_z)
+        feature_names.append("volume_zscore_5")
 
     # ターゲット
     targets: List[float] = []

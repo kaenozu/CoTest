@@ -20,10 +20,8 @@ class LinearModel:
     def predict(self, feature_matrix: Sequence[Sequence[float]]) -> List[float]:
         return [self.predict_one(row) for row in feature_matrix]
 
-
 def _transpose(matrix: Sequence[Sequence[float]]) -> List[List[float]]:
     return [list(col) for col in zip(*matrix)]
-
 
 def _matmul(A: Sequence[Sequence[float]], B: Sequence[Sequence[float]]) -> List[List[float]]:
     result: List[List[float]] = []
@@ -34,10 +32,8 @@ def _matmul(A: Sequence[Sequence[float]], B: Sequence[Sequence[float]]) -> List[
         result.append(new_row)
     return result
 
-
 def _vector_matmul(matrix: Sequence[Sequence[float]], vector: Sequence[float]) -> List[float]:
     return [sum(m * v for m, v in zip(row, vector)) for row in matrix]
-
 
 def _gaussian_elimination(A: List[List[float]], b: List[float]) -> List[float]:
     n = len(A)
@@ -65,7 +61,6 @@ def _gaussian_elimination(A: List[List[float]], b: List[float]) -> List[float]:
         x[i] = b[i] - sum(A[i][j] * x[j] for j in range(i + 1, n))
     return x
 
-
 def _fit_linear_regression(
     X: Sequence[Sequence[float]], y: Sequence[float], ridge_lambda: float = 1e-6
 ) -> List[float]:
@@ -73,19 +68,18 @@ def _fit_linear_regression(
     Xt = _transpose(X_with_bias)
     XtX = _matmul(Xt, X_with_bias)
     for i in range(len(XtX)):
+        if i == 0:
+            continue
         XtX[i][i] += ridge_lambda
     Xty = _vector_matmul(Xt, y)
     coefficients = _gaussian_elimination([row[:] for row in XtX], list(Xty))
     return coefficients
 
-
 def _mean_absolute_error(y_true: Sequence[float], y_pred: Sequence[float]) -> float:
     return sum(abs(a - b) for a, b in zip(y_true, y_pred)) / len(y_true)
 
-
 def _root_mean_squared_error(y_true: Sequence[float], y_pred: Sequence[float]) -> float:
     return math.sqrt(sum((a - b) ** 2 for a, b in zip(y_true, y_pred)) / len(y_true))
-
 
 def _time_series_splits(n_samples: int, n_splits: int):
     fold_size = n_samples // (n_splits + 1)
@@ -97,12 +91,12 @@ def _time_series_splits(n_samples: int, n_splits: int):
             continue
         yield train_indices, test_indices
 
-
 def train_and_evaluate(
     prices: Sequence[PriceRow],
     forecast_horizon: int = 1,
     lags: Iterable[int] = (1, 2, 3, 5, 10),
     cv_splits: int = 5,
+    ridge_lambda: float = 1e-6,
 ) -> dict[str, object]:
     """履歴データでモデルを学習し、指標を返す."""
     X, y, feature_names = build_feature_matrix(prices, forecast_horizon=forecast_horizon, lags=lags)
@@ -110,6 +104,8 @@ def train_and_evaluate(
         raise ValueError("学習に利用できるサンプルがありません")
     if cv_splits < 1:
         raise ValueError("cv_splits は1以上で指定してください")
+    if ridge_lambda < 0:
+        raise ValueError("ridge_lambda は0以上で指定してください")
 
     mae_scores: List[float] = []
     rmse_scores: List[float] = []
@@ -120,13 +116,13 @@ def train_and_evaluate(
         y_test = [y[i] for i in test_idx]
         if not X_train or not X_test:
             continue
-        coefficients = _fit_linear_regression(X_train, y_train)
+        coefficients = _fit_linear_regression(X_train, y_train, ridge_lambda=ridge_lambda)
         model = LinearModel(feature_names, coefficients)
         predictions = model.predict(X_test)
         mae_scores.append(_mean_absolute_error(y_test, predictions))
         rmse_scores.append(_root_mean_squared_error(y_test, predictions))
 
-    final_coefficients = _fit_linear_regression(X, y)
+    final_coefficients = _fit_linear_regression(X, y, ridge_lambda=ridge_lambda)
     final_model = LinearModel(feature_names, final_coefficients)
     full_predictions = final_model.predict(X)
     mae = _mean_absolute_error(y, full_predictions)

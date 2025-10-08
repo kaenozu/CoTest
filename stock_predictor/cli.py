@@ -105,7 +105,11 @@ def forecast(
 
 
 @main.command()
-@click.argument("csv_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument(
+    "csv_path",
+    required=False,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
 @click.option("--horizon", default=1, show_default=True, type=int, help="予測する営業日数")
 @click.option(
     "--lags",
@@ -134,17 +138,46 @@ def forecast(
     type=int,
     help="交差検証の分割数",
 )
+@click.option("--ticker", type=str, help="yfinanceから取得するティッカー")
+@click.option(
+    "--period",
+    type=str,
+    default="60d",
+    show_default=True,
+    help="yfinanceから取得する期間",
+)
+@click.option(
+    "--interval",
+    type=str,
+    default="1d",
+    show_default=True,
+    help="yfinanceから取得する足種",
+)
 def backtest(
-    csv_path: Path,
+    csv_path: Path | None,
     horizon: int,
     lags: Tuple[int, ...],
     ridge: float,
     threshold: float,
     cv_splits: int,
+    ticker: str | None,
+    period: str,
+    interval: str,
 ) -> None:
     """予測値を用いたシンプルトレード戦略をバックテストする."""
 
-    data = load_price_data(csv_path)
+    if (csv_path is None) == (ticker is None):
+        raise click.UsageError("CSVパスまたは--tickerのいずれか一方を指定してください")
+
+    if csv_path is not None:
+        if period != "60d" or interval != "1d":
+            raise click.UsageError("CSV入力時は--period/--intervalを指定できません")
+        data = load_price_data(csv_path)
+        source_label = str(csv_path)
+    else:
+        data = fetch_price_data_from_yfinance(ticker, period=period, interval=interval)
+        source_label = f"{ticker} ({period}, {interval})"
+
     effective_lags = lags or (1, 2, 3, 5, 10)
 
     result = simulate_trading_strategy(
@@ -157,7 +190,7 @@ def backtest(
     )
 
     click.echo("===== バックテスト結果 =====")
-    click.echo(f"使用データ: {csv_path}")
+    click.echo(f"使用データ: {source_label}")
     click.echo(f"予測ホライゾン: {horizon} 日")
     click.echo(f"使用ラグ: {', '.join(str(l) for l in effective_lags)}")
     click.echo(f"トレード回数: {result['trades']}")

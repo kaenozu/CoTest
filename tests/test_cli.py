@@ -89,6 +89,70 @@ def test_cli_backtest_outputs_strategy_metrics(tmp_path):
     assert "累積リターン" in result.output
 
 
+def test_cli_backtest_accepts_ticker(monkeypatch: pytest.MonkeyPatch):
+    runner = CliRunner()
+
+    dummy_rows = [
+        {
+            "Date": date(2023, 1, 1),
+            "Open": 10.0,
+            "High": 11.0,
+            "Low": 9.0,
+            "Close": 10.5,
+            "Volume": 1000.0,
+        },
+        {
+            "Date": date(2023, 1, 2),
+            "Open": 11.0,
+            "High": 12.0,
+            "Low": 10.0,
+            "Close": 11.5,
+            "Volume": 1100.0,
+        },
+    ]
+
+    fetch_mock = Mock(return_value=dummy_rows)
+    monkeypatch.setattr(
+        "stock_predictor.cli.fetch_price_data_from_yfinance", fetch_mock
+    )
+
+    simulate_mock = Mock(
+        return_value={
+            "trades": 3,
+            "win_rate": 0.5,
+            "cumulative_return": 0.08,
+            "signals": [],
+        }
+    )
+    monkeypatch.setattr(
+        "stock_predictor.cli.simulate_trading_strategy", simulate_mock
+    )
+
+    load_mock = Mock(side_effect=AssertionError("load_price_data should not be called"))
+    monkeypatch.setattr("stock_predictor.cli.load_price_data", load_mock)
+
+    result = runner.invoke(
+        main,
+        [
+            "backtest",
+            "--ticker",
+            "AAPL",
+            "--period",
+            "30d",
+            "--interval",
+            "1h",
+            "--threshold",
+            "0.001",
+        ],
+    )
+
+    assert result.exit_code == 0
+    fetch_mock.assert_called_once_with("AAPL", period="30d", interval="1h")
+    simulate_mock.assert_called_once()
+    args, _ = simulate_mock.call_args
+    assert args[0] == dummy_rows
+
+
 def test_cli_fetches_data_from_yfinance(monkeypatch: pytest.MonkeyPatch):
     runner = CliRunner()
 
@@ -143,6 +207,25 @@ def test_cli_fetches_data_from_yfinance(monkeypatch: pytest.MonkeyPatch):
     train_mock.assert_called_once()
     _, kwargs = train_mock.call_args
     assert kwargs["cv_splits"] == 5
+
+
+def test_cli_backtest_rejects_csv_and_ticker(tmp_path):
+    csv_path = tmp_path / "prices.csv"
+    create_csv(csv_path)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "backtest",
+            str(csv_path),
+            "--ticker",
+            "AAPL",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "CSVパスまたは--tickerのいずれか一方を指定してください" in result.output
 
 
 def test_cli_accepts_cv_splits_option_for_forecast(

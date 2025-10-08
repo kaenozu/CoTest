@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import warnings
 from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
@@ -98,9 +99,17 @@ def build_feature_matrix(
     feature_columns: List[List[float]] = []
 
     lags_sorted = sorted(set(int(lag) for lag in lags))
+    max_valid_lag = max(len(closes) - forecast_horizon - 1, 0)
     for lag in lags_sorted:
         if lag <= 0:
             raise ValueError("ラグは正の整数で指定してください")
+        if lag > max_valid_lag:
+            warnings.warn(
+                f"利用可能な履歴({max_valid_lag})を超えるラグ {lag} はスキップします",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            continue
         shifted_close = [float("nan")] * lag + closes[:-lag]
         feature_columns.append(shifted_close)
         feature_names.append(f"lag_{lag}_close")

@@ -69,3 +69,13 @@ def test_ridge_regularization_does_not_shrink_bias():
 
     assert pytest.approx(2.0, rel=1e-6) == coefficients[0]
     assert all(abs(coef) < 1e-9 for coef in coefficients[1:])
+
+
+def test_train_and_evaluate_ignores_excessive_lags():
+    prices = generate_prices(days=8)
+
+    result = train_and_evaluate(prices, forecast_horizon=1, lags=(1, 2, 10), cv_splits=2)
+
+    assert result["model"].feature_names
+    assert "lag_10_close" not in result["model"].feature_names
+    assert "lag_10_return" not in result["model"].feature_names

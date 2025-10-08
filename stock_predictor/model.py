@@ -82,13 +82,25 @@ def _root_mean_squared_error(y_true: Sequence[float], y_pred: Sequence[float]) -
     return math.sqrt(sum((a - b) ** 2 for a, b in zip(y_true, y_pred)) / len(y_true))
 
 def _time_series_splits(n_samples: int, n_splits: int):
-    fold_size = n_samples // (n_splits + 1)
+    if n_splits < 1:
+        return
+
+    base_fold_size = n_samples // (n_splits + 1)
+    remainder = n_samples - base_fold_size * (n_splits + 1)
+
     for i in range(1, n_splits + 1):
-        test_end = fold_size * i
-        train_indices = list(range(test_end))
-        test_indices = list(range(test_end, min(test_end + fold_size, n_samples)))
-        if not test_indices:
+        test_start = base_fold_size * i
+        test_size = base_fold_size
+        if i == n_splits:
+            test_size += remainder
+        test_end = min(test_start + test_size, n_samples)
+
+        train_indices = list(range(test_start))
+        test_indices = list(range(test_start, test_end))
+
+        if not train_indices or not test_indices:
             continue
+
         yield train_indices, test_indices
 
 def train_and_evaluate(

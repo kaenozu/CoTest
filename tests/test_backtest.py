@@ -3,6 +3,7 @@ from datetime import date, timedelta
 import pytest
 
 from stock_predictor.backtest import simulate_trading_strategy
+from stock_predictor.data import build_feature_dataset
 
 
 def generate_prices(start_price: float = 100.0, days: int = 12, step: float = 1.0):
@@ -77,6 +78,33 @@ def test_simulate_trading_strategy_provides_trade_timing():
     assert isinstance(exit_, datetime)
     assert exit_ > entry
     assert (exit_ - entry).days == 2
+
+
+def test_simulate_trading_strategy_generates_tail_signals():
+    prices = generate_prices(days=16)
+
+    dataset = build_feature_dataset(
+        prices,
+        forecast_horizon=1,
+        lags=(1,),
+        rolling_windows=(3, 5),
+    )
+
+    result = simulate_trading_strategy(
+        prices,
+        forecast_horizon=1,
+        lags=(1,),
+        rolling_windows=(3, 5),
+        cv_splits=3,
+        threshold=0.0,
+    )
+
+    assert result["signals"], "シグナルが生成されていること"
+
+    last_signal_date = result["signals"][-1]["date"]
+    expected_last_date = prices[dataset.sample_indices[-1]]["Date"]
+
+    assert last_signal_date == expected_last_date
 
 
 def test_simulate_trading_strategy_accounts_for_position_and_fees(monkeypatch):

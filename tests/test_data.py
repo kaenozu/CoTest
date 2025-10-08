@@ -9,6 +9,7 @@ from stock_predictor.data import (
     build_feature_matrix,
     fetch_price_data_from_yfinance,
     load_price_data,
+    stream_live_prices,
 )
 import stock_predictor.data as data_module
 
@@ -156,6 +157,47 @@ def test_build_feature_matrix_skips_volume_zscore_when_insufficient_data():
     assert "volume_zscore_5" not in feature_names
     assert len(X) > 0
     assert len(X) == len(y)
+
+
+def test_stream_live_prices_normalizes_payload():
+    events = [
+        {
+            "symbol": "AAPL",
+            "timestamp": 1,
+            "open": 150.0,
+            "high": 151.0,
+            "low": 149.5,
+            "price": 150.8,
+            "volume": 1200,
+        },
+        {
+            "symbol": "AAPL",
+            "timestamp": 2,
+            "price": 152.3,
+            "volume": None,
+        },
+    ]
+
+    class DummyClient:
+        def stream_prices(self, ticker):
+            assert ticker == "AAPL"
+            for payload in events:
+                yield payload
+
+    def fake_to_datetime(ordinal):
+        return date(2023, 1, ordinal)
+
+    client = DummyClient()
+    rows = list(stream_live_prices(client, "AAPL", limit=2, timestamp_converter=fake_to_datetime))
+
+    assert len(rows) == 2
+    assert rows[0]["Date"] == date(2023, 1, 1)
+    assert rows[0]["Close"] == 150.8
+    assert rows[0]["Volume"] == 1200.0
+    assert rows[0]["Open"] == 150.0
+    assert rows[0]["High"] == 151.0
+    assert rows[0]["Low"] == 149.5
+    assert rows[1]["Volume"] == 0.0
 
 
 def test_build_feature_matrix_skips_too_long_lags(sample_prices):

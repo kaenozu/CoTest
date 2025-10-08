@@ -32,3 +32,28 @@ def test_train_and_evaluate_returns_metrics():
     assert result["mae"] >= 0
     assert result["rmse"] >= 0
     assert result["cv_score"] >= 0
+
+
+def test_ridge_lambda_influences_coefficients():
+    prices = generate_prices()
+
+    weak_ridge = train_and_evaluate(
+        prices,
+        forecast_horizon=1,
+        lags=(1, 2, 3),
+        cv_splits=3,
+        ridge_lambda=1e-6,
+    )
+    strong_ridge = train_and_evaluate(
+        prices,
+        forecast_horizon=1,
+        lags=(1, 2, 3),
+        cv_splits=3,
+        ridge_lambda=10.0,
+    )
+
+    weak_coeffs = weak_ridge["model"].coefficients
+    strong_coeffs = strong_ridge["model"].coefficients
+
+    assert len(weak_coeffs) == len(strong_coeffs)
+    assert any(abs(a - b) > 1e-6 for a, b in zip(weak_coeffs, strong_coeffs))

@@ -43,3 +43,21 @@ def test_cli_runs_and_outputs_metrics(tmp_path):
     assert result.exit_code == 0
     assert "平均絶対誤差" in result.output
     assert "二乗平均平方根誤差" in result.output
+
+
+def test_cli_accepts_ridge_option(tmp_path):
+    csv_path = tmp_path / "prices.csv"
+    create_csv(csv_path)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "forecast",
+            str(csv_path),
+            "--ridge",
+            "0.1",
+        ],
+    )
+
+    assert result.exit_code == 0

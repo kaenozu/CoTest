@@ -103,6 +103,7 @@ def train_and_evaluate(
     forecast_horizon: int = 1,
     lags: Iterable[int] = (1, 2, 3, 5, 10),
     cv_splits: int = 5,
+    ridge_lambda: float = 1e-6,
 ) -> dict[str, object]:
     """履歴データでモデルを学習し、指標を返す."""
     X, y, feature_names = build_feature_matrix(prices, forecast_horizon=forecast_horizon, lags=lags)
@@ -110,6 +111,8 @@ def train_and_evaluate(
         raise ValueError("学習に利用できるサンプルがありません")
     if cv_splits < 1:
         raise ValueError("cv_splits は1以上で指定してください")
+    if ridge_lambda < 0:
+        raise ValueError("ridge_lambda は0以上で指定してください")
 
     mae_scores: List[float] = []
     rmse_scores: List[float] = []
@@ -120,13 +123,13 @@ def train_and_evaluate(
         y_test = [y[i] for i in test_idx]
         if not X_train or not X_test:
             continue
-        coefficients = _fit_linear_regression(X_train, y_train)
+        coefficients = _fit_linear_regression(X_train, y_train, ridge_lambda=ridge_lambda)
         model = LinearModel(feature_names, coefficients)
         predictions = model.predict(X_test)
         mae_scores.append(_mean_absolute_error(y_test, predictions))
         rmse_scores.append(_root_mean_squared_error(y_test, predictions))
 
-    final_coefficients = _fit_linear_regression(X, y)
+    final_coefficients = _fit_linear_regression(X, y, ridge_lambda=ridge_lambda)
     final_model = LinearModel(feature_names, final_coefficients)
     full_predictions = final_model.predict(X)
     mae = _mean_absolute_error(y, full_predictions)

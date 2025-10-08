@@ -2,7 +2,15 @@ from datetime import date
 
 import pytest
 
-from stock_predictor.data import build_feature_matrix, load_price_data
+from types import SimpleNamespace
+
+from stock_predictor.data import (
+    build_feature_dataset,
+    build_feature_matrix,
+    fetch_price_data_from_yfinance,
+    load_price_data,
+)
+import stock_predictor.data as data_module
 
 
 def test_load_price_data_sort_and_columns(tmp_path):
@@ -33,6 +41,96 @@ def test_build_feature_matrix_creates_lag_and_returns_targets(sample_prices):
     assert "lag_2_close" in feature_names
     assert len(X) == len(y)
     assert len(X[0]) == len(feature_names)
+
+
+def test_build_feature_dataset_returns_indices_and_closes(sample_prices):
+    dataset = build_feature_dataset(
+        sample_prices,
+        forecast_horizon=1,
+        lags=(1,),
+        rolling_windows=(3, 5),
+    )
+
+    assert dataset.sample_indices == [4]
+    assert dataset.closes == [14.5]
+    assert len(dataset.features) == len(dataset.targets) == 1
+
+
+def test_fetch_price_data_from_yfinance(monkeypatch):
+    class DummyFrame:
+        def __init__(self, rows):
+            self._rows = rows
+
+        @property
+        def empty(self):
+            return len(self._rows) == 0
+
+        def dropna(self):
+            filtered = [
+                (idx, values)
+                for idx, values in self._rows
+                if all(value is not None for value in values.values())
+            ]
+            return DummyFrame(filtered)
+
+        def iterrows(self):
+            yield from self._rows
+
+    rows = [
+        (
+            date(2023, 1, 1),
+            {
+                "Open": 10.0,
+                "High": 11.0,
+                "Low": 9.0,
+                "Close": 10.5,
+                "Adj Close": 10.4,
+                "Volume": 1000,
+            },
+        ),
+        (
+            date(2023, 1, 2),
+            {
+                "Open": 11.0,
+                "High": 12.0,
+                "Low": 10.0,
+                "Close": 11.5,
+                "Adj Close": 11.4,
+                "Volume": 1100,
+            },
+        ),
+        (
+            date(2023, 1, 3),
+            {
+                "Open": 12.0,
+                "High": 13.0,
+                "Low": 11.0,
+                "Close": None,
+                "Adj Close": 12.4,
+                "Volume": 1200,
+            },
+        ),
+    ]
+
+    frame = DummyFrame(rows)
+
+    def fake_download(*args, **kwargs):
+        assert kwargs["period"] == "30d"
+        assert kwargs["interval"] == "1d"
+        return frame
+
+    monkeypatch.setattr(
+        data_module,
+        "yfinance",
+        SimpleNamespace(download=fake_download),
+    )
+
+    data = fetch_price_data_from_yfinance("AAPL", period="30d", interval="1d")
+
+    assert len(data) == 2
+    assert data[0]["Date"] == date(2023, 1, 1)
+    assert data[0]["Close"] == 10.5
+    assert data[1]["Volume"] == 1100
 
 
 def test_build_feature_matrix_skips_volume_zscore_when_insufficient_data():

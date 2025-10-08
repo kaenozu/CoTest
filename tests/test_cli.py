@@ -3,6 +3,10 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
+from unittest.mock import Mock
+
+import pytest
+
 from stock_predictor.cli import main
 
 
@@ -61,3 +65,79 @@ def test_cli_accepts_ridge_option(tmp_path):
     )
 
     assert result.exit_code == 0
+
+
+def test_cli_backtest_outputs_strategy_metrics(tmp_path):
+    csv_path = tmp_path / "prices.csv"
+    create_csv(csv_path, days=80)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "backtest",
+            str(csv_path),
+            "--threshold",
+            "0.001",
+            "--lags",
+            "1",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "トレード回数" in result.output
+    assert "累積リターン" in result.output
+
+
+def test_cli_fetches_data_from_yfinance(monkeypatch: pytest.MonkeyPatch):
+    runner = CliRunner()
+
+    dummy_rows = [
+        {
+            "Date": date(2023, 1, 1),
+            "Open": 10.0,
+            "High": 11.0,
+            "Low": 9.0,
+            "Close": 10.5,
+            "Volume": 1000.0,
+        },
+        {
+            "Date": date(2023, 1, 2),
+            "Open": 11.0,
+            "High": 12.0,
+            "Low": 10.0,
+            "Close": 11.5,
+            "Volume": 1100.0,
+        },
+    ]
+
+    fetch_mock = Mock(return_value=dummy_rows)
+    monkeypatch.setattr(
+        "stock_predictor.cli.fetch_price_data_from_yfinance", fetch_mock
+    )
+
+    train_mock = Mock(
+        return_value={
+            "mae": 0.1,
+            "rmse": 0.2,
+            "cv_score": 0.3,
+        }
+    )
+    monkeypatch.setattr("stock_predictor.cli.train_and_evaluate", train_mock)
+
+    result = runner.invoke(
+        main,
+        [
+            "forecast",
+            "--ticker",
+            "AAPL",
+            "--period",
+            "60d",
+            "--interval",
+            "1d",
+        ],
+    )
+
+    assert result.exit_code == 0
+    fetch_mock.assert_called_once_with("AAPL", period="60d", interval="1d")
+    train_mock.assert_called_once()

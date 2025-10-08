@@ -5,6 +5,7 @@ import pytest
 from types import SimpleNamespace
 
 from stock_predictor.data import (
+    build_feature_dataset,
     build_feature_matrix,
     fetch_price_data_from_yfinance,
     load_price_data,
@@ -40,6 +41,19 @@ def test_build_feature_matrix_creates_lag_and_returns_targets(sample_prices):
     assert "lag_2_close" in feature_names
     assert len(X) == len(y)
     assert len(X[0]) == len(feature_names)
+
+
+def test_build_feature_dataset_returns_indices_and_closes(sample_prices):
+    dataset = build_feature_dataset(
+        sample_prices,
+        forecast_horizon=1,
+        lags=(1,),
+        rolling_windows=(3, 5),
+    )
+
+    assert dataset.sample_indices == [4]
+    assert dataset.closes == [14.5]
+    assert len(dataset.features) == len(dataset.targets) == 1
 
 
 def test_fetch_price_data_from_yfinance(monkeypatch):

@@ -67,6 +67,28 @@ def test_cli_accepts_ridge_option(tmp_path):
     assert result.exit_code == 0
 
 
+def test_cli_backtest_outputs_strategy_metrics(tmp_path):
+    csv_path = tmp_path / "prices.csv"
+    create_csv(csv_path, days=80)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "backtest",
+            str(csv_path),
+            "--threshold",
+            "0.001",
+            "--lags",
+            "1",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "トレード回数" in result.output
+    assert "累積リターン" in result.output
+
+
 def test_cli_fetches_data_from_yfinance(monkeypatch: pytest.MonkeyPatch):
     runner = CliRunner()
 

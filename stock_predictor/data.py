@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable, List, Sequence, Tuple
@@ -15,6 +16,17 @@ except ModuleNotFoundError:  # pragma: no cover
 REQUIRED_COLUMNS = ["Date", "Open", "High", "Low", "Close", "Volume"]
 
 PriceRow = dict[str, float | date]
+
+
+@dataclass
+class FeatureDataset:
+    """特徴量生成の結果をまとめたデータ構造."""
+
+    features: List[List[float]]
+    targets: List[float]
+    feature_names: List[str]
+    sample_indices: List[int]
+    closes: List[float]
 
 
 def _ensure_date(value: Any) -> date:
@@ -158,12 +170,12 @@ def _rolling_std(values: Sequence[float], window: int) -> List[float]:
     return out
 
 
-def build_feature_matrix(
+def build_feature_dataset(
     prices: Sequence[PriceRow],
     forecast_horizon: int = 1,
     lags: Iterable[int] = (1, 2, 3, 5, 10),
     rolling_windows: Iterable[int] = (3, 5, 10, 20),
-) -> Tuple[List[List[float]], List[float], List[str]]:
+) -> FeatureDataset:
     """特徴量行列とターゲットを生成する."""
     if forecast_horizon <= 0:
         raise ValueError("forecast_horizon は1以上である必要があります")
@@ -248,6 +260,8 @@ def build_feature_matrix(
     # 有効サンプルのみ残す
     matrix: List[List[float]] = []
     cleaned_targets: List[float] = []
+    sample_indices: List[int] = []
+    closes_for_samples: List[float] = []
     for idx in range(len(closes)):
         row = [col[idx] for col in feature_columns]
         if any(value != value for value in row):  # NaNチェック
@@ -257,5 +271,24 @@ def build_feature_matrix(
             continue
         matrix.append(row)
         cleaned_targets.append(target)
+        sample_indices.append(idx)
+        closes_for_samples.append(closes[idx])
 
-    return matrix, cleaned_targets, feature_names
+    return FeatureDataset(matrix, cleaned_targets, feature_names, sample_indices, closes_for_samples)
+
+
+def build_feature_matrix(
+    prices: Sequence[PriceRow],
+    forecast_horizon: int = 1,
+    lags: Iterable[int] = (1, 2, 3, 5, 10),
+    rolling_windows: Iterable[int] = (3, 5, 10, 20),
+) -> Tuple[List[List[float]], List[float], List[str]]:
+    """従来互換のインターフェースで特徴量を返す."""
+
+    dataset = build_feature_dataset(
+        prices,
+        forecast_horizon=forecast_horizon,
+        lags=lags,
+        rolling_windows=rolling_windows,
+    )
+    return dataset.features, dataset.targets, dataset.feature_names

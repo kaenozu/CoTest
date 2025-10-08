@@ -241,6 +241,39 @@ def forecast(
     type=int,
     help="交差検証の分割数",
 )
+@click.option(
+    "--initial-capital",
+    default=1_000_000.0,
+    show_default=True,
+    type=float,
+    help="バックテスト開始時の資金",
+)
+@click.option(
+    "--position-fraction",
+    default=1.0,
+    show_default=True,
+    type=float,
+    help="各トレードで投入する資金割合(0-1)",
+)
+@click.option(
+    "--fee-rate",
+    default=0.0,
+    show_default=True,
+    type=float,
+    help="売買時にかかる手数料率",
+)
+@click.option(
+    "--slippage",
+    default=0.0,
+    show_default=True,
+    type=float,
+    help="約定価格に上乗せするスリッページ(比率)",
+)
+@click.option(
+    "--max-drawdown-limit",
+    type=float,
+    help="許容最大ドローダウン(比率)。超過で取引停止",
+)
 @click.option("--ticker", type=str, help="yfinanceから取得するティッカー")
 @click.option(
     "--period",
@@ -263,6 +296,11 @@ def backtest(
     ridge: float,
     threshold: float,
     cv_splits: int,
+    initial_capital: float,
+    position_fraction: float,
+    fee_rate: float,
+    slippage: float,
+    max_drawdown_limit: float | None,
     ticker: str | None,
     period: str,
     interval: str,
@@ -290,6 +328,11 @@ def backtest(
         cv_splits=cv_splits,
         ridge_lambda=ridge,
         threshold=threshold,
+        initial_capital=initial_capital,
+        position_fraction=position_fraction,
+        fee_rate=fee_rate,
+        slippage=slippage,
+        max_drawdown_limit=max_drawdown_limit,
     )
 
     click.echo("===== バックテスト結果 =====")
@@ -298,7 +341,11 @@ def backtest(
     click.echo(f"使用ラグ: {', '.join(str(l) for l in effective_lags)}")
     click.echo(f"トレード回数: {result['trades']}")
     click.echo(f"勝率: {result['win_rate'] * 100:.2f}%")
+    click.echo(f"初期資金: {result['initial_capital']:.2f}")
+    click.echo(f"最終残高: {result['ending_balance']:.2f}")
+    click.echo(f"累積損益: {result['total_profit']:.2f}")
     click.echo(f"累積リターン: {result['cumulative_return'] * 100:.2f}%")
+    click.echo(f"最大ドローダウン: {result['max_drawdown'] * 100:.2f}%")
 
     preview = result["signals"][:10]
     if preview:
@@ -308,4 +355,6 @@ def backtest(
             click.echo(
                 f"{date}: {signal['action']} | 予測リターン {signal['predicted_return'] * 100:.2f}%"
                 f" / 実現リターン {signal['actual_return'] * 100:.2f}%"
+                f" / 取引数量 {signal.get('quantity', 0):.4f}"
+                f" / PnL {signal.get('pnl', 0.0):.2f}"
             )

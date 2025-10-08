@@ -1,0 +1,34 @@
+from datetime import date, timedelta
+
+from stock_predictor.model import train_and_evaluate
+
+
+def generate_prices(days: int = 40):
+    base_date = date(2023, 1, 1)
+    data = []
+    price = 100.0
+    for i in range(days):
+        day = base_date + timedelta(days=i)
+        price += 0.8
+        data.append(
+            {
+                "Date": day,
+                "Open": price - 0.5,
+                "High": price + 0.5,
+                "Low": price - 1.0,
+                "Close": price,
+                "Volume": 1000.0 + i * 10,
+            }
+        )
+    return data
+
+
+def test_train_and_evaluate_returns_metrics():
+    prices = generate_prices()
+
+    result = train_and_evaluate(prices, forecast_horizon=1, lags=(1, 2, 3), cv_splits=3)
+
+    assert set(result.keys()) == {"model", "mae", "rmse", "cv_score"}
+    assert result["mae"] >= 0
+    assert result["rmse"] >= 0
+    assert result["cv_score"] >= 0

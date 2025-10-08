@@ -295,3 +295,89 @@ def test_cli_backtest_accepts_cv_splits_option(
     simulate_mock.assert_called_once()
     _, kwargs = simulate_mock.call_args
     assert kwargs["cv_splits"] == 4
+
+
+def test_cli_forecast_streams_live_data(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    csv_path = tmp_path / "prices.csv"
+    create_csv(csv_path, days=10)
+
+    runner = CliRunner()
+
+    class DummyModel:
+        def predict_one(self, features):
+            return features[0] * 2
+
+    train_mock = Mock(
+        return_value={
+            "mae": 0.1,
+            "rmse": 0.2,
+            "cv_score": 0.3,
+            "model": DummyModel(),
+        }
+    )
+    monkeypatch.setattr("stock_predictor.cli.train_and_evaluate", train_mock)
+
+    live_rows = [
+        {
+            "Date": date(2023, 2, 1),
+            "Open": 150.0,
+            "High": 151.0,
+            "Low": 149.0,
+            "Close": 150.5,
+            "Volume": 1000.0,
+        },
+        {
+            "Date": date(2023, 2, 2),
+            "Open": 151.0,
+            "High": 152.0,
+            "Low": 150.0,
+            "Close": 151.5,
+            "Volume": 1100.0,
+        },
+    ]
+
+    def fake_stream_live_prices(client, ticker, limit, **kwargs):
+        assert ticker == "AAPL"
+        assert limit == 2
+        for row in live_rows:
+            yield row
+
+    monkeypatch.setattr(
+        "stock_predictor.cli.stream_live_prices", fake_stream_live_prices
+    )
+
+    def fake_build_latest_feature_row(prices, **kwargs):
+        return [float(len(prices))], ["dummy"]
+
+    monkeypatch.setattr(
+        "stock_predictor.cli.build_latest_feature_row", fake_build_latest_feature_row
+    )
+
+    client = object()
+
+    def fake_resolve_live_client(identifier):
+        assert identifier == "dummy.factory"
+        return client
+
+    monkeypatch.setattr("stock_predictor.cli._resolve_live_client", fake_resolve_live_client)
+
+    result = runner.invoke(
+        main,
+        [
+            "forecast",
+            str(csv_path),
+            "--ticker",
+            "AAPL",
+            "--live",
+            "--live-client",
+            "dummy.factory",
+            "--live-limit",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "===== ライブ予測 =====" in result.output
+    assert "最新終値" in result.output

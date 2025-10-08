@@ -26,7 +26,6 @@ def main() -> None:
     multiple=True,
     help="特徴量に含める終値のラグ(複数指定可)",
 )
-@click.option("--cv-splits", default=5, show_default=True, type=int, help="クロスバリデーション分割数")
 @click.option(
     "--ridge",
     default=1e-6,
@@ -34,7 +33,7 @@ def main() -> None:
     type=float,
     help="リッジ回帰の正則化係数",
 )
-def forecast(csv_path: Path, horizon: int, lags: Tuple[int, ...], cv_splits: int, ridge: float) -> None:
+def forecast(csv_path: Path, horizon: int, lags: Tuple[int, ...], ridge: float) -> None:
     """CSVから学習し翌日以降の終値を予測する."""
     data = load_price_data(csv_path)
 
@@ -44,7 +43,7 @@ def forecast(csv_path: Path, horizon: int, lags: Tuple[int, ...], cv_splits: int
         data,
         forecast_horizon=horizon,
         lags=effective_lags,
-        cv_splits=cv_splits,
+        cv_splits=5, # デフォルト値を設定
         ridge_lambda=ridge,
     )
 
@@ -66,7 +65,6 @@ def forecast(csv_path: Path, horizon: int, lags: Tuple[int, ...], cv_splits: int
     multiple=True,
     help="特徴量に含める終値のラグ(複数指定可)",
 )
-@click.option("--cv-splits", default=5, show_default=True, type=int, help="クロスバリデーション分割数")
 @click.option(
     "--ridge",
     default=1e-6,
@@ -85,7 +83,6 @@ def backtest(
     csv_path: Path,
     horizon: int,
     lags: Tuple[int, ...],
-    cv_splits: int,
     ridge: float,
     threshold: float,
 ) -> None:
@@ -98,7 +95,7 @@ def backtest(
         data,
         forecast_horizon=horizon,
         lags=effective_lags,
-        cv_splits=cv_splits,
+        cv_splits=5, # デフォルト値を設定
         ridge_lambda=ridge,
         threshold=threshold,
     )

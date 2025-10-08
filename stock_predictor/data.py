@@ -15,7 +15,7 @@ except ModuleNotFoundError:  # pragma: no cover
 
 REQUIRED_COLUMNS = ["Date", "Open", "High", "Low", "Close", "Volume"]
 
-PriceRow = dict[str, float | date]
+PriceRow = dict[str, float | date | datetime]
 
 
 @dataclass

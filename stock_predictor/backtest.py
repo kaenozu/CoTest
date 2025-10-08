@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime, time
 from typing import Iterable, List, Sequence
 
 from .data import FeatureDataset, PriceRow, build_feature_dataset
 from .model import LinearModel, _fit_linear_regression, _time_series_splits
+
+
+def _to_datetime(value: date | datetime) -> datetime:
+    """日付/日時情報を ``datetime`` に正規化する."""
+
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, time())
+    raise TypeError("Date列の値をdatetimeに変換できませんでした")
 
 
 def _generate_predictions(
@@ -91,12 +102,22 @@ def simulate_trading_strategy(
             cumulative_return += profit
 
         row_index = dataset.sample_indices[idx]
+        entry_date_value = sorted_rows[row_index]["Date"]
+        exit_index = row_index + forecast_horizon
+        exit_date_value = (
+            sorted_rows[exit_index]["Date"] if exit_index < len(sorted_rows) else None
+        )
+
         signal = {
-            "date": sorted_rows[row_index]["Date"],
+            "date": entry_date_value,
             "action": action,
             "predicted_return": predicted_return,
             "actual_return": actual_return,
             "profit": profit,
+            "entry_timestamp": _to_datetime(entry_date_value),
+            "exit_timestamp": _to_datetime(exit_date_value)
+            if exit_date_value is not None
+            else _to_datetime(entry_date_value),
         }
         signals.append(signal)
 

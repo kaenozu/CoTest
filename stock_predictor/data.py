@@ -4,13 +4,46 @@ from __future__ import annotations
 
 import csv
 import warnings
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Iterable, List, Sequence, Tuple
+from typing import Any, Iterable, List, Sequence, Tuple
+
+try:  # pragma: no cover - importガード
+    import yfinance
+except ModuleNotFoundError:  # pragma: no cover
+    yfinance = None  # type: ignore[assignment]
 
 REQUIRED_COLUMNS = ["Date", "Open", "High", "Low", "Close", "Volume"]
 
 PriceRow = dict[str, float | date]
+
+
+@dataclass
+class FeatureDataset:
+    """特徴量生成の結果をまとめたデータ構造."""
+
+    features: List[List[float]]
+    targets: List[float]
+    feature_names: List[str]
+    sample_indices: List[int]
+    closes: List[float]
+
+
+def _ensure_date(value: Any) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if hasattr(value, "to_pydatetime"):
+        converted = value.to_pydatetime()
+        if isinstance(converted, datetime):
+            return converted.date()
+    if hasattr(value, "date"):
+        converted = value.date()
+        if isinstance(converted, date):
+            return converted
+    raise ValueError("日付インデックスを解釈できませんでした")
 
 
 def load_price_data(path: str | Path) -> List[PriceRow]:
@@ -37,6 +70,65 @@ def load_price_data(path: str | Path) -> List[PriceRow]:
                 }
             )
     rows.sort(key=lambda r: r["Date"])  # type: ignore[index]
+    return rows
+
+
+def fetch_price_data_from_yfinance(
+    ticker: str,
+    period: str = "60d",
+    interval: str = "1d",
+) -> List[PriceRow]:
+    """yfinanceから株価データを取得し、PriceRow形式に変換する."""
+
+    if not ticker:
+        raise ValueError("tickerを指定してください")
+
+    if yfinance is None:
+        raise RuntimeError("yfinanceがインストールされていません")
+
+    try:
+        downloaded = yfinance.download(
+            ticker,
+            period=period,
+            interval=interval,
+            progress=False,
+            auto_adjust=False,
+        )
+    except Exception as exc:  # pragma: no cover - 例外経路を簡潔に確保
+        raise RuntimeError("yfinanceからのデータ取得に失敗しました") from exc
+
+    if getattr(downloaded, "empty", True):
+        raise ValueError("指定条件で取得できる価格データがありません")
+
+    cleaned = downloaded.dropna()
+    rows: List[PriceRow] = []
+    for index, values in cleaned.iterrows():
+        try:
+            row_date = _ensure_date(index)
+            open_price = float(values["Open"])
+            high_price = float(values["High"])
+            low_price = float(values["Low"])
+            close_price = float(values["Close"])
+            volume = float(values["Volume"])
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        rows.append(
+            {
+                "Date": row_date,
+                "Open": open_price,
+                "High": high_price,
+                "Low": low_price,
+                "Close": close_price,
+                "Volume": volume,
+            }
+        )
+
+    rows.sort(key=lambda r: r["Date"])  # type: ignore[index]
+
+    if not rows:
+        raise ValueError("有効な価格データが取得できませんでした")
+
     return rows
 
 
@@ -79,12 +171,12 @@ def _rolling_std(values: Sequence[float], window: int) -> List[float]:
     return out
 
 
-def build_feature_matrix(
+def build_feature_dataset(
     prices: Sequence[PriceRow],
     forecast_horizon: int = 1,
     lags: Iterable[int] = (1, 2, 3, 5, 10),
     rolling_windows: Iterable[int] = (3, 5, 10, 20),
-) -> Tuple[List[List[float]], List[float], List[str]]:
+) -> FeatureDataset:
     """特徴量行列とターゲットを生成する."""
     if forecast_horizon <= 0:
         raise ValueError("forecast_horizon は1以上である必要があります")
@@ -149,9 +241,7 @@ def build_feature_matrix(
 
     # 出来高のZスコア(5日)
     window = 5
-    if len(volumes) < window:
-        volume_z = [float("nan")] * len(volumes)
-    else:
+    if len(volumes) >= window: # プルリクエスト #6 の変更を含む
         volume_z = []
         for i in range(len(volumes)):
             if i + 1 < window:
@@ -162,8 +252,8 @@ def build_feature_matrix(
             variance = sum((x - mean) ** 2 for x in segment) / window
             std = variance ** 0.5
             volume_z.append((volumes[i] - mean) / std if std != 0 else 0.0)
-    feature_columns.append(volume_z)
-    feature_names.append("volume_zscore_5")
+        feature_columns.append(volume_z)
+        feature_names.append("volume_zscore_5")
 
     # ターゲット
     targets: List[float] = []
@@ -177,6 +267,8 @@ def build_feature_matrix(
     # 有効サンプルのみ残す
     matrix: List[List[float]] = []
     cleaned_targets: List[float] = []
+    sample_indices: List[int] = []
+    closes_for_samples: List[float] = []
     for idx in range(len(closes)):
         row = [col[idx] for col in feature_columns]
         if any(value != value for value in row):  # NaNチェック
@@ -186,5 +278,24 @@ def build_feature_matrix(
             continue
         matrix.append(row)
         cleaned_targets.append(target)
+        sample_indices.append(idx)
+        closes_for_samples.append(closes[idx])
 
-    return matrix, cleaned_targets, feature_names
+    return FeatureDataset(matrix, cleaned_targets, feature_names, sample_indices, closes_for_samples)
+
+
+def build_feature_matrix(
+    prices: Sequence[PriceRow],
+    forecast_horizon: int = 1,
+    lags: Iterable[int] = (1, 2, 3, 5, 10),
+    rolling_windows: Iterable[int] = (3, 5, 10, 20),
+) -> Tuple[List[List[float]], List[float], List[str]]:
+    """従来互換のインターフェースで特徴量を返す."""
+
+    dataset = build_feature_dataset(
+        prices,
+        forecast_horizon=forecast_horizon,
+        lags=lags,
+        rolling_windows=rolling_windows,
+    )
+    return dataset.features, dataset.targets, dataset.feature_names

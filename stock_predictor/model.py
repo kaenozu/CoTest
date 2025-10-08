@@ -20,10 +20,8 @@ class LinearModel:
     def predict(self, feature_matrix: Sequence[Sequence[float]]) -> List[float]:
         return [self.predict_one(row) for row in feature_matrix]
 
-
 def _transpose(matrix: Sequence[Sequence[float]]) -> List[List[float]]:
     return [list(col) for col in zip(*matrix)]
-
 
 def _matmul(A: Sequence[Sequence[float]], B: Sequence[Sequence[float]]) -> List[List[float]]:
     result: List[List[float]] = []
@@ -34,10 +32,8 @@ def _matmul(A: Sequence[Sequence[float]], B: Sequence[Sequence[float]]) -> List[
         result.append(new_row)
     return result
 
-
 def _vector_matmul(matrix: Sequence[Sequence[float]], vector: Sequence[float]) -> List[float]:
     return [sum(m * v for m, v in zip(row, vector)) for row in matrix]
-
 
 def _gaussian_elimination(A: List[List[float]], b: List[float]) -> List[float]:
     n = len(A)
@@ -65,7 +61,6 @@ def _gaussian_elimination(A: List[List[float]], b: List[float]) -> List[float]:
         x[i] = b[i] - sum(A[i][j] * x[j] for j in range(i + 1, n))
     return x
 
-
 def _fit_linear_regression(
     X: Sequence[Sequence[float]], y: Sequence[float], ridge_lambda: float = 1e-6
 ) -> List[float]:
@@ -80,14 +75,11 @@ def _fit_linear_regression(
     coefficients = _gaussian_elimination([row[:] for row in XtX], list(Xty))
     return coefficients
 
-
 def _mean_absolute_error(y_true: Sequence[float], y_pred: Sequence[float]) -> float:
     return sum(abs(a - b) for a, b in zip(y_true, y_pred)) / len(y_true)
 
-
 def _root_mean_squared_error(y_true: Sequence[float], y_pred: Sequence[float]) -> float:
     return math.sqrt(sum((a - b) ** 2 for a, b in zip(y_true, y_pred)) / len(y_true))
-
 
 def _time_series_splits(n_samples: int, n_splits: int):
     fold_size = n_samples // (n_splits + 1)
@@ -98,7 +90,6 @@ def _time_series_splits(n_samples: int, n_splits: int):
         if not test_indices:
             continue
         yield train_indices, test_indices
-
 
 def train_and_evaluate(
     prices: Sequence[PriceRow],

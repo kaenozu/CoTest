@@ -35,6 +35,31 @@ def test_build_feature_matrix_creates_lag_and_returns_targets(sample_prices):
     assert len(X[0]) == len(feature_names)
 
 
+def test_build_feature_matrix_skips_volume_zscore_when_insufficient_data():
+    prices = [
+        {
+            "Date": date(2023, 1, day),
+            "Open": 10.0 + day,
+            "High": 11.0 + day,
+            "Low": 9.0 + day,
+            "Close": 10.5 + day,
+            "Volume": 1000.0 + day * 10,
+        }
+        for day in range(1, 5)
+    ]
+
+    X, y, feature_names = build_feature_matrix(
+        prices,
+        forecast_horizon=1,
+        lags=(1,),
+        rolling_windows=(3,),
+    )
+
+    assert "volume_zscore_5" not in feature_names
+    assert len(X) > 0
+    assert len(X) == len(y)
+
+
 @pytest.fixture
 def sample_prices():
     return [

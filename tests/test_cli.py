@@ -86,7 +86,8 @@ def test_cli_backtest_outputs_strategy_metrics(tmp_path):
 
     assert result.exit_code == 0
     assert "トレード回数" in result.output
-    assert "累積リターン" in result.output
+    assert "初期資金" in result.output
+    assert "最大ドローダウン" in result.output
 
 
 def test_cli_fetches_data_from_yfinance(monkeypatch: pytest.MonkeyPatch):
@@ -191,6 +192,11 @@ def test_cli_backtest_accepts_cv_splits_option(
             "trades": 5,
             "win_rate": 0.6,
             "cumulative_return": 0.12,
+            "initial_capital": 1_000_000.0,
+            "ending_balance": 1_120_000.0,
+            "total_profit": 120_000.0,
+            "balance_history": [1_000_000.0, 1_120_000.0],
+            "max_drawdown": 0.05,
             "signals": [],
         }
     )
@@ -212,3 +218,8 @@ def test_cli_backtest_accepts_cv_splits_option(
     simulate_mock.assert_called_once()
     _, kwargs = simulate_mock.call_args
     assert kwargs["cv_splits"] == 4
+    assert kwargs["initial_capital"] == 1_000_000.0
+    assert kwargs["position_fraction"] == 1.0
+    assert kwargs["fee_rate"] == 0.0
+    assert kwargs["slippage"] == 0.0
+    assert kwargs["max_drawdown_limit"] is None

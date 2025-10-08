@@ -164,6 +164,68 @@ def fetch_price_data_from_yfinance(
     return rows
 
 
+def stream_live_prices(
+    client: Any,
+    ticker: str,
+    *,
+    limit: int | None = None,
+    timestamp_key: str = "timestamp",
+    timestamp_converter: Callable[[Any], Any] | None = None,
+) -> Iterator[PriceRow]:
+    """外部クライアントからライブ株価を購読しPriceRow形式で返す."""
+
+    if not ticker:
+        raise ValueError("tickerを指定してください")
+    if client is None or not hasattr(client, "stream_prices"):
+        raise ValueError("クライアントはstream_pricesメソッドを持つ必要があります")
+
+    converter = timestamp_converter or (lambda value: value)
+    count = 0
+
+    for payload in client.stream_prices(ticker):
+        if payload is None:
+            continue
+        raw_timestamp = payload.get(timestamp_key)
+        if raw_timestamp is None:
+            continue
+        timestamp = converter(raw_timestamp)
+        try:
+            row_date = _ensure_date(timestamp)
+        except ValueError:
+            continue
+
+        try:
+            close_price = float(payload.get("price", payload.get("close")))
+        except (TypeError, ValueError):
+            continue
+
+        open_price = payload.get("open", close_price)
+        high_price = payload.get("high", max(open_price, close_price))
+        low_price = payload.get("low", min(open_price, close_price))
+        volume = payload.get("volume", 0.0)
+
+        try:
+            open_value = float(open_price)
+            high_value = float(high_price)
+            low_value = float(low_price)
+            volume_value = float(volume) if volume is not None else 0.0
+        except (TypeError, ValueError):
+            continue
+
+        yield {
+            "Date": row_date,
+            "Open": open_value,
+            "High": high_value,
+            "Low": low_value,
+            "Close": close_price,
+            "Volume": volume_value,
+        }
+
+        count += 1
+        if limit is not None and count >= limit:
+            break
+
+
 def _moving_average(values: Sequence[float], window: int) -> List[float]:
     out: List[float] = []
     cumulative = 0.0
@@ -203,22 +265,15 @@ def _rolling_std(values: Sequence[float], window: int) -> List[float]:
     return out
 
 
-def build_feature_dataset(
-    prices: Sequence[PriceRow],
-    forecast_horizon: int = 1,
-    lags: Iterable[int] = (1, 2, 3, 5, 10),
-    rolling_windows: Iterable[int] = (3, 5, 10, 20),
-) -> FeatureDataset:
-    """特徴量行列とターゲットを生成する."""
-    if forecast_horizon <= 0:
-        raise ValueError("forecast_horizon は1以上である必要があります")
-
-    sorted_rows = sorted(prices, key=lambda r: r["Date"])  # type: ignore[index]
-    closes = [float(row["Close"]) for row in sorted_rows]
-    highs = [float(row["High"]) for row in sorted_rows]
-    lows = [float(row["Low"]) for row in sorted_rows]
-    volumes = [float(row["Volume"]) for row in sorted_rows]
-
+def _calculate_feature_columns(
+    closes: Sequence[float],
+    highs: Sequence[float],
+    lows: Sequence[float],
+    volumes: Sequence[float],
+    forecast_horizon: int,
+    lags: Iterable[int],
+    rolling_windows: Iterable[int],
+) -> tuple[List[List[float]], List[str]]:
     feature_names: List[str] = []
     feature_columns: List[List[float]] = []
 
@@ -234,7 +289,7 @@ def build_feature_dataset(
                 stacklevel=2,
             )
             continue
-        shifted_close = [float("nan")] * lag + closes[:-lag]
+        shifted_close = [float("nan")] * lag + list(closes[:-lag])
         feature_columns.append(shifted_close)
         feature_names.append(f"lag_{lag}_close")
 
@@ -245,11 +300,11 @@ def build_feature_dataset(
         feature_columns.append(pct_changes)
         feature_names.append(f"lag_{lag}_return")
 
-    # 1日の値動き
-    daily_return = [0.0] + [
-        (closes[i] - closes[i - 1]) / closes[i - 1] if closes[i - 1] != 0 else 0.0
-        for i in range(1, len(closes))
-    ]
+    daily_return = [0.0]
+    for i in range(1, len(closes)):
+        prev_close = closes[i - 1]
+        current = closes[i]
+        daily_return.append((current - prev_close) / prev_close if prev_close != 0 else 0.0)
     feature_columns.append(daily_return)
     feature_names.append("daily_return")
 
@@ -271,9 +326,8 @@ def build_feature_dataset(
         feature_columns.append(_rolling_std(daily_return, window))
         feature_names.append(f"volatility_{window}")
 
-    # 出来高のZスコア(5日)
     window = 5
-    if len(volumes) >= window: # プルリクエスト #6 の変更を含む
+    if len(volumes) >= window:
         volume_z = []
         for i in range(len(volumes)):
             if i + 1 < window:
@@ -287,7 +341,35 @@ def build_feature_dataset(
         feature_columns.append(volume_z)
         feature_names.append("volume_zscore_5")
 
-    # ターゲット
+    return feature_columns, feature_names
+
+
+def build_feature_dataset(
+    prices: Sequence[PriceRow],
+    forecast_horizon: int = 1,
+    lags: Iterable[int] = (1, 2, 3, 5, 10),
+    rolling_windows: Iterable[int] = (3, 5, 10, 20),
+) -> FeatureDataset:
+    """特徴量行列とターゲットを生成する."""
+    if forecast_horizon <= 0:
+        raise ValueError("forecast_horizon は1以上である必要があります")
+
+    sorted_rows = sorted(prices, key=lambda r: r["Date"])  # type: ignore[index]
+    closes = [float(row["Close"]) for row in sorted_rows]
+    highs = [float(row["High"]) for row in sorted_rows]
+    lows = [float(row["Low"]) for row in sorted_rows]
+    volumes = [float(row["Volume"]) for row in sorted_rows]
+
+    feature_columns, feature_names = _calculate_feature_columns(
+        closes,
+        highs,
+        lows,
+        volumes,
+        forecast_horizon,
+        lags,
+        rolling_windows,
+    )
+
     targets: List[float] = []
     for i in range(len(closes)):
         future_index = i + forecast_horizon
@@ -296,7 +378,6 @@ def build_feature_dataset(
         else:
             targets.append(float("nan"))
 
-    # 有効サンプルのみ残す
     matrix: List[List[float]] = []
     cleaned_targets: List[float] = []
     sample_indices: List[int] = []
@@ -331,3 +412,40 @@ def build_feature_matrix(
         rolling_windows=rolling_windows,
     )
     return dataset.features, dataset.targets, dataset.feature_names
+
+
+def build_latest_feature_row(
+    prices: Sequence[PriceRow],
+    forecast_horizon: int = 1,
+    lags: Iterable[int] = (1, 2, 3, 5, 10),
+    rolling_windows: Iterable[int] = (3, 5, 10, 20),
+) -> Tuple[List[float], List[str]]:
+    """最新レコードから推論用特徴量ベクトルを構築する."""
+
+    if forecast_horizon <= 0:
+        raise ValueError("forecast_horizon は1以上である必要があります")
+    if not prices:
+        raise ValueError("価格データがありません")
+
+    sorted_rows = sorted(prices, key=lambda r: r["Date"])  # type: ignore[index]
+    closes = [float(row["Close"]) for row in sorted_rows]
+    highs = [float(row["High"]) for row in sorted_rows]
+    lows = [float(row["Low"]) for row in sorted_rows]
+    volumes = [float(row["Volume"]) for row in sorted_rows]
+
+    feature_columns, feature_names = _calculate_feature_columns(
+        closes,
+        highs,
+        lows,
+        volumes,
+        forecast_horizon,
+        lags,
+        rolling_windows,
+    )
+
+    latest_index = len(sorted_rows) - 1
+    row = [column[latest_index] for column in feature_columns]
+    if any(value != value for value in row):
+        raise ValueError("最新データから特徴量を生成できませんでした")
+
+    return row, feature_names

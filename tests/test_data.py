@@ -158,6 +158,19 @@ def test_build_feature_matrix_skips_volume_zscore_when_insufficient_data():
     assert len(X) == len(y)
 
 
+def test_build_feature_matrix_skips_too_long_lags(sample_prices):
+    short_prices = sample_prices[:8]
+
+    X, y, feature_names = build_feature_matrix(
+        short_prices, forecast_horizon=1, lags=(1, 2, 10)
+    )
+
+    assert len(X) > 0
+    assert len(X) == len(y)
+    assert "lag_10_close" not in feature_names
+    assert "lag_10_return" not in feature_names
+
+
 @pytest.fixture
 def sample_prices():
     return [

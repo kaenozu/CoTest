@@ -364,12 +364,17 @@ def backtest(
 
     preview = result["signals"][:10]
     if preview:
-        click.echo("--- シグナル一覧(最大10件) ---")
-        for signal in preview:
-            date = signal["date"]
+        click.echo("--- トレード一覧(最大10件) ---")
+        for trade in preview:
+            entry = trade["entry"]
+            exit_ = trade["exit"]
+            entry_time = entry["timestamp"]
+            exit_time = exit_["timestamp"]
+            predicted = entry.get("predicted_return", 0.0) * 100
+            realized = trade.get("return", 0.0) * 100
+            profit = trade.get("profit", 0.0)
             click.echo(
-                f"{date}: {signal['action']} | 予測リターン {signal['predicted_return'] * 100:.2f}%"
-                f" / 実現リターン {signal['actual_return'] * 100:.2f}%"
-                f" / 取引数量 {signal.get('quantity', 0):.4f}"
-                f" / PnL {signal.get('pnl', 0.0):.2f}"
+                f"{entry_time.date()} -> {exit_time.date()}: {trade['direction']}"
+                f" | 予測 {predicted:.2f}% / 実現 {realized:.2f}%"
+                f" | 損益 {profit:.2f}"
             )

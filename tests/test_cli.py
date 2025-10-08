@@ -86,6 +86,7 @@ def test_cli_backtest_outputs_strategy_metrics(tmp_path):
 
     assert result.exit_code == 0
     assert "トレード回数" in result.output
+    assert "累積損益" in result.output
     assert "初期資金" in result.output
     assert "最大ドローダウン" in result.output
 

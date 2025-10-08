@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, time
 from typing import Iterable, List, Sequence
 
@@ -37,6 +38,25 @@ def _generate_predictions(
         for idx, pred in zip(test_idx, preds):
             predictions[idx] = pred
     return predictions
+
+
+@dataclass
+class Position:
+    """オープンポジションを表現するデータ構造."""
+
+    direction: str
+    quantity: int
+    entry_index: int
+    exit_index: int
+    entry_price: float
+    exit_price: float
+    entry_timestamp: datetime
+    exit_timestamp: datetime
+    predicted_return: float
+
+    @property
+    def holding_period(self) -> int:
+        return self.exit_index - self.entry_index
 
 
 def simulate_trading_strategy(
@@ -93,101 +113,151 @@ def simulate_trading_strategy(
     max_balance = balance
     max_drawdown = 0.0
     total_profit = 0.0
+    open_positions: List[Position] = []
+    max_open_positions = 1
 
     halt_due_to_drawdown = False
 
+    def close_position(position: Position) -> None:
+        nonlocal trades, wins, total_profit, balance, max_balance, max_drawdown, halt_due_to_drawdown
+
+        entry_price = position.entry_price
+        exit_price = position.exit_price
+        quantity = position.quantity
+
+        price_diff = exit_price - entry_price
+        if position.direction == "long":
+            profit = price_diff * quantity
+        else:
+            profit = -price_diff * quantity
+
+        if entry_price != 0:
+            realized_return = profit / (entry_price * quantity)
+        else:
+            realized_return = 0.0
+
+        # 手数料とスリッページを計算
+        entry_value = quantity * entry_price
+        exit_value = quantity * exit_price
+        fees = fee_rate * (entry_value + exit_value)
+
+        # 損益を計算
+        pnl = (exit_value - entry_value) - fees if position.direction == "long" else (entry_value - exit_value) - fees
+
+        # 残高を更新
+        balance += pnl
+        total_profit = balance - initial_capital
+        balance_history.append(balance)
+        if balance > max_balance:
+            max_balance = balance
+        drawdown = (max_balance - balance) / max_balance if max_balance else 0.0
+        if drawdown > max_drawdown:
+            max_drawdown = drawdown
+        if max_drawdown_limit is not None and max_drawdown > max_drawdown_limit:
+            halt_due_to_drawdown = True
+
+        trade_record = {
+            "direction": position.direction,
+            "quantity": quantity,
+            "entry": {
+                "timestamp": position.entry_timestamp,
+                "price": float(entry_price),
+                "index": position.entry_index,
+                "predicted_return": position.predicted_return,
+            },
+            "exit": {
+                "timestamp": position.exit_timestamp,
+                "price": float(exit_price),
+                "index": position.exit_index,
+                "actual_return": realized_return,
+            },
+            "holding_period": position.holding_period,
+            "profit": float(profit),
+            "return": realized_return,
+            "pnl": pnl,
+            "fees": fees,
+            "balance_after_trade": balance,
+        }
+
+        signals.append(trade_record)
+        trades += 1
+        if profit > 0:
+            wins += 1
+
     for idx, predicted_close in enumerate(predictions):
+        if idx >= len(dataset.sample_indices):
+            break
+        row_index = dataset.sample_indices[idx]
+
+        # まず決済期限に達したポジションをクローズ
+        remaining_positions: List[Position] = []
+        matured_positions: List[Position] = []
+        for position in open_positions:
+            if row_index >= position.exit_index:
+                matured_positions.append(position)
+            else:
+                remaining_positions.append(position)
+        open_positions = remaining_positions
+        for position in matured_positions:
+            close_position(position)
+
         if predicted_close is None:
             continue
+
         current_close = dataset.closes[idx]
         if current_close == 0:
             continue
-        actual_close = dataset.targets[idx]
+
         predicted_return = (predicted_close - current_close) / current_close
-        actual_return = (actual_close - current_close) / current_close
-        entry_price = current_close
-        exit_price = actual_close
-        quantity = 0.0
-        fees = 0.0
-        pnl = 0.0
-        executed = False
 
         if predicted_return > threshold:
-            action = "buy"
-            entry_price = current_close * (1 + slippage)
-            exit_price = actual_close * (1 - slippage)
-            if entry_price > 0 and balance > 0:
-                trade_value = balance * position_fraction
-                quantity = trade_value / entry_price
-                entry_value = quantity * entry_price
-                exit_value = quantity * exit_price
-                fees = fee_rate * (entry_value + exit_value)
-                pnl = exit_value - entry_value - fees
-                executed = quantity > 0
+            direction = "long"
         elif predicted_return < -threshold:
-            action = "sell"
-            entry_price = current_close * (1 - slippage)
-            exit_price = actual_close * (1 + slippage)
-            if entry_price > 0 and balance > 0:
-                trade_value = balance * position_fraction
-                quantity = trade_value / entry_price
-                entry_value = quantity * entry_price
-                exit_value = quantity * exit_price
-                fees = fee_rate * (entry_value + exit_value)
-                pnl = (entry_value - exit_value) - fees
-                executed = quantity > 0
+            direction = "short"
         else:
-            action = "hold"
-            pnl = 0.0
+            direction = "flat"
 
-        if executed:
-            trades += 1
-            if pnl > 0:
-                wins += 1
-            balance += pnl
-            total_profit = balance - initial_capital
-            balance_history.append(balance)
-            if balance > max_balance:
-                max_balance = balance
-            drawdown = (max_balance - balance) / max_balance if max_balance else 0.0
-            if drawdown > max_drawdown:
-                max_drawdown = drawdown
-            if max_drawdown_limit is not None and max_drawdown > max_drawdown_limit:
-                halt_due_to_drawdown = True
-        else:
-            quantity = 0.0
-            fees = 0.0 if action == "hold" else fees
-            pnl = 0.0 if action == "hold" else pnl
+        if direction == "flat":
+            continue
 
-        row_index = dataset.sample_indices[idx]
-        entry_date_value = sorted_rows[row_index]["Date"]
+        if len(open_positions) >= max_open_positions:
+            continue
+
         exit_index = row_index + forecast_horizon
-        exit_date_value = (
-            sorted_rows[exit_index]["Date"] if exit_index < len(sorted_rows) else None
+        if exit_index >= len(sorted_rows):
+            continue
+
+        entry_row = sorted_rows[row_index]
+        exit_row = sorted_rows[exit_index]
+        entry_date_value = entry_row["Date"]
+        exit_date_value = exit_row["Date"]
+        entry_timestamp = _to_datetime(entry_date_value)
+        exit_timestamp = _to_datetime(exit_date_value)
+        exit_price = float(exit_row["Close"])
+
+        # トレード価格を計算 (スリッページ)
+        entry_price_with_slippage = current_close * (1 + slippage) if direction == "long" else current_close * (1 - slippage)
+
+        # トレード数量を計算
+        trade_value = balance * position_fraction
+        quantity = int(trade_value / entry_price_with_slippage) if entry_price_with_slippage > 0 else 0
+
+        position = Position(
+            direction=direction,
+            quantity=quantity,
+            entry_index=row_index,
+            exit_index=exit_index,
+            entry_price=float(current_close),
+            exit_price=exit_price,
+            entry_timestamp=entry_timestamp,
+            exit_timestamp=exit_timestamp,
+            predicted_return=float(predicted_return),
         )
+        open_positions.append(position)
 
-        signal = {
-            "date": entry_date_value,
-            "action": action,
-            "predicted_return": predicted_return,
-            "actual_return": actual_return,
-            "quantity": quantity,
-            "entry_price": entry_price,
-            "exit_price": exit_price,
-            "fees": fees,
-            "pnl": pnl,
-            "executed": executed,
-            "entry_timestamp": _to_datetime(entry_date_value),
-            "exit_timestamp": _to_datetime(exit_date_value)
-            if exit_date_value is not None
-            else _to_datetime(entry_date_value),
-        }
-        if executed:
-            signal["balance_after_trade"] = balance
-        signals.append(signal)
-
-        if halt_due_to_drawdown:
-            break
+    # ループ終了後に未決済ポジションがあればまとめてクローズ
+    for position in open_positions:
+        close_position(position)
 
     win_rate = wins / trades if trades else 0.0
     ending_balance = balance

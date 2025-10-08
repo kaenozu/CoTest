@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stock-predictor"
+version = "0.1.0"
+description = "CLI tool for stock price forecasting using pure Python"
+authors = [{name = "AI"}]
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+stock-predictor = "stock_predictor.cli:main"

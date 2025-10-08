@@ -8,7 +8,7 @@ from typing import Tuple
 import click
 
 from .backtest import simulate_trading_strategy
-from .data import load_price_data
+from .data import fetch_price_data_from_yfinance, load_price_data
 from .model import train_and_evaluate
 
 
@@ -18,7 +18,11 @@ def main() -> None:
 
 
 @main.command()
-@click.argument("csv_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument(
+    "csv_path",
+    required=False,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
 @click.option("--horizon", default=1, show_default=True, type=int, help="予測する営業日数")
 @click.option(
     "--lags",
@@ -33,9 +37,45 @@ def main() -> None:
     type=float,
     help="リッジ回帰の正則化係数",
 )
-def forecast(csv_path: Path, horizon: int, lags: Tuple[int, ...], ridge: float) -> None:
-    """CSVから学習し翌日以降の終値を予測する."""
-    data = load_price_data(csv_path)
+@click.option("--ticker", type=str, help="yfinanceから取得するティッカー")
+@click.option(
+    "--period",
+    type=str,
+    default="60d",
+    show_default=True,
+    help="yfinanceから取得する期間",
+)
+@click.option(
+    "--interval",
+    type=str,
+    default="1d",
+    show_default=True,
+    help="yfinanceから取得する足種",
+)
+def forecast(
+    csv_path: Path | None,
+    horizon: int,
+    lags: Tuple[int, ...],
+    ridge: float,
+    ticker: str | None,
+    period: str,
+    interval: str,
+) -> None:
+    """CSVまたはyfinanceから学習し翌日以降の終値を予測する."""
+
+    if (csv_path is None) == (ticker is None):
+        raise click.UsageError("CSVパスまたは--tickerのいずれか一方を指定してください")
+
+    if csv_path is not None:
+        if ticker is not None:
+            raise click.UsageError("CSV入力時は--tickerを同時指定できません")
+        if period != "60d" or interval != "1d":
+            raise click.UsageError("CSV入力時は--period/--intervalを指定できません")
+        data = load_price_data(csv_path)
+        source_label = str(csv_path)
+    else:
+        data = fetch_price_data_from_yfinance(ticker, period=period, interval=interval)
+        source_label = f"{ticker} ({period}, {interval})"
 
     effective_lags = lags or (1, 2, 3, 5, 10)
 
@@ -48,7 +88,7 @@ def forecast(csv_path: Path, horizon: int, lags: Tuple[int, ...], ridge: float) 
     )
 
     click.echo("===== 予測評価結果 =====")
-    click.echo(f"使用データ: {csv_path}")
+    click.echo(f"使用データ: {source_label}")
     click.echo(f"予測ホライゾン: {horizon} 日")
     click.echo(f"使用ラグ: {', '.join(str(l) for l in effective_lags)}")
     click.echo(f"平均絶対誤差(MAE): {result['mae']:.4f}")

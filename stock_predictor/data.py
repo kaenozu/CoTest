@@ -6,7 +6,12 @@ import csv
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Iterable, List, Sequence, Tuple
+from typing import Any, Iterable, List, Sequence, Tuple
+
+try:  # pragma: no cover - importガード
+    import yfinance
+except ModuleNotFoundError:  # pragma: no cover
+    yfinance = None  # type: ignore[assignment]
 
 REQUIRED_COLUMNS = ["Date", "Open", "High", "Low", "Close", "Volume"]
 
@@ -22,6 +27,22 @@ class FeatureDataset:
     feature_names: List[str]
     sample_indices: List[int]
     closes: List[float]
+
+
+def _ensure_date(value: Any) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if hasattr(value, "to_pydatetime"):
+        converted = value.to_pydatetime()
+        if isinstance(converted, datetime):
+            return converted.date()
+    if hasattr(value, "date"):
+        converted = value.date()
+        if isinstance(converted, date):
+            return converted
+    raise ValueError("日付インデックスを解釈できませんでした")
 
 
 def load_price_data(path: str | Path) -> List[PriceRow]:
@@ -48,6 +69,65 @@ def load_price_data(path: str | Path) -> List[PriceRow]:
                 }
             )
     rows.sort(key=lambda r: r["Date"])  # type: ignore[index]
+    return rows
+
+
+def fetch_price_data_from_yfinance(
+    ticker: str,
+    period: str = "60d",
+    interval: str = "1d",
+) -> List[PriceRow]:
+    """yfinanceから株価データを取得し、PriceRow形式に変換する."""
+
+    if not ticker:
+        raise ValueError("tickerを指定してください")
+
+    if yfinance is None:
+        raise RuntimeError("yfinanceがインストールされていません")
+
+    try:
+        downloaded = yfinance.download(
+            ticker,
+            period=period,
+            interval=interval,
+            progress=False,
+            auto_adjust=False,
+        )
+    except Exception as exc:  # pragma: no cover - 例外経路を簡潔に確保
+        raise RuntimeError("yfinanceからのデータ取得に失敗しました") from exc
+
+    if getattr(downloaded, "empty", True):
+        raise ValueError("指定条件で取得できる価格データがありません")
+
+    cleaned = downloaded.dropna()
+    rows: List[PriceRow] = []
+    for index, values in cleaned.iterrows():
+        try:
+            row_date = _ensure_date(index)
+            open_price = float(values["Open"])
+            high_price = float(values["High"])
+            low_price = float(values["Low"])
+            close_price = float(values["Close"])
+            volume = float(values["Volume"])
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        rows.append(
+            {
+                "Date": row_date,
+                "Open": open_price,
+                "High": high_price,
+                "Low": low_price,
+                "Close": close_price,
+                "Volume": volume,
+            }
+        )
+
+    rows.sort(key=lambda r: r["Date"])  # type: ignore[index]
+
+    if not rows:
+        raise ValueError("有効な価格データが取得できませんでした")
+
     return rows
 
 

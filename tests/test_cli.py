@@ -139,7 +139,9 @@ def test_cli_fetches_data_from_yfinance(monkeypatch: pytest.MonkeyPatch):
     )
 
     assert result.exit_code == 0
-    fetch_mock.assert_called_once_with("AAPL", period="60d", interval="1d")
+    fetch_mock.assert_called_once_with(
+        "AAPL", period="60d", interval="1d", adjust="none"
+    )
     train_mock.assert_called_once()
     _, kwargs = train_mock.call_args
     assert kwargs["cv_splits"] == 5

@@ -59,6 +59,13 @@ def main() -> None:
     show_default=True,
     help="yfinanceから取得する足種",
 )
+@click.option(
+    "--adjust",
+    type=click.Choice(["none", "auto", "manual"]),
+    default="none",
+    show_default=True,
+    help="yfinance取得時の価格調整モード",
+)
 def forecast(
     csv_path: Path | None,
     horizon: int,
@@ -68,6 +75,7 @@ def forecast(
     ticker: str | None,
     period: str,
     interval: str,
+    adjust: str,
 ) -> None:
     """CSVまたはyfinanceから学習し翌日以降の終値を予測する."""
 
@@ -79,10 +87,17 @@ def forecast(
             raise click.UsageError("CSV入力時は--tickerを同時指定できません")
         if period != "60d" or interval != "1d":
             raise click.UsageError("CSV入力時は--period/--intervalを指定できません")
+        if adjust != "none":
+            raise click.UsageError("CSV入力時は--adjustを指定できません")
         data = load_price_data(csv_path)
         source_label = str(csv_path)
     else:
-        data = fetch_price_data_from_yfinance(ticker, period=period, interval=interval)
+        data = fetch_price_data_from_yfinance(
+            ticker,
+            period=period,
+            interval=interval,
+            adjust=adjust,
+        )
         source_label = f"{ticker} ({period}, {interval})"
 
     effective_lags = lags or (1, 2, 3, 5, 10)

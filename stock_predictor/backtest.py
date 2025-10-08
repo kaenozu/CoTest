@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, time
 from typing import Iterable, List, Sequence
 
@@ -39,6 +40,25 @@ def _generate_predictions(
     return predictions
 
 
+@dataclass
+class Position:
+    """オープンポジションを表現するデータ構造."""
+
+    direction: str
+    quantity: int
+    entry_index: int
+    exit_index: int
+    entry_price: float
+    exit_price: float
+    entry_timestamp: datetime
+    exit_timestamp: datetime
+    predicted_return: float
+
+    @property
+    def holding_period(self) -> int:
+        return self.exit_index - self.entry_index
+
+
 def simulate_trading_strategy(
     prices: Sequence[PriceRow],
     forecast_horizon: int = 1,
@@ -74,52 +94,120 @@ def simulate_trading_strategy(
     trades = 0
     wins = 0
     cumulative_return = 0.0
+    open_positions: List[Position] = []
+    max_open_positions = 1
+
+    def close_position(position: Position) -> None:
+        nonlocal trades, wins, cumulative_return
+
+        entry_price = position.entry_price
+        exit_price = position.exit_price
+        quantity = position.quantity
+
+        price_diff = exit_price - entry_price
+        if position.direction == "long":
+            profit = price_diff * quantity
+        else:
+            profit = -price_diff * quantity
+
+        if entry_price != 0:
+            realized_return = profit / (entry_price * quantity)
+        else:
+            realized_return = 0.0
+
+        trade_record = {
+            "direction": position.direction,
+            "quantity": quantity,
+            "entry": {
+                "timestamp": position.entry_timestamp,
+                "price": float(entry_price),
+                "index": position.entry_index,
+                "predicted_return": position.predicted_return,
+            },
+            "exit": {
+                "timestamp": position.exit_timestamp,
+                "price": float(exit_price),
+                "index": position.exit_index,
+                "actual_return": realized_return,
+            },
+            "holding_period": position.holding_period,
+            "profit": float(profit),
+            "return": realized_return,
+        }
+
+        signals.append(trade_record)
+        trades += 1
+        if profit > 0:
+            wins += 1
+        cumulative_return += profit
 
     for idx, predicted_close in enumerate(predictions):
+        if idx >= len(dataset.sample_indices):
+            break
+        row_index = dataset.sample_indices[idx]
+
+        # まず決済期限に達したポジションをクローズ
+        remaining_positions: List[Position] = []
+        matured_positions: List[Position] = []
+        for position in open_positions:
+            if row_index >= position.exit_index:
+                matured_positions.append(position)
+            else:
+                remaining_positions.append(position)
+        open_positions = remaining_positions
+        for position in matured_positions:
+            close_position(position)
+
         if predicted_close is None:
             continue
+
         current_close = dataset.closes[idx]
         if current_close == 0:
             continue
-        actual_close = dataset.targets[idx]
+
         predicted_return = (predicted_close - current_close) / current_close
-        actual_return = (actual_close - current_close) / current_close
 
         if predicted_return > threshold:
-            action = "buy"
-            profit = actual_return
+            direction = "long"
         elif predicted_return < -threshold:
-            action = "sell"
-            profit = -actual_return
+            direction = "short"
         else:
-            action = "hold"
-            profit = 0.0
+            direction = "flat"
 
-        if action != "hold":
-            trades += 1
-            if profit > 0:
-                wins += 1
-            cumulative_return += profit
+        if direction == "flat":
+            continue
 
-        row_index = dataset.sample_indices[idx]
-        entry_date_value = sorted_rows[row_index]["Date"]
+        if len(open_positions) >= max_open_positions:
+            continue
+
         exit_index = row_index + forecast_horizon
-        exit_date_value = (
-            sorted_rows[exit_index]["Date"] if exit_index < len(sorted_rows) else None
-        )
+        if exit_index >= len(sorted_rows):
+            continue
 
-        signal = {
-            "date": entry_date_value,
-            "action": action,
-            "predicted_return": predicted_return,
-            "actual_return": actual_return,
-            "profit": profit,
-            "entry_timestamp": _to_datetime(entry_date_value),
-            "exit_timestamp": _to_datetime(exit_date_value)
-            if exit_date_value is not None
-            else _to_datetime(entry_date_value),
-        }
-        signals.append(signal)
+        entry_row = sorted_rows[row_index]
+        exit_row = sorted_rows[exit_index]
+        entry_date_value = entry_row["Date"]
+        exit_date_value = exit_row["Date"]
+        entry_timestamp = _to_datetime(entry_date_value)
+        exit_timestamp = _to_datetime(exit_date_value)
+        exit_price = float(exit_row["Close"])
+
+        position = Position(
+            direction=direction,
+            quantity=1,
+            entry_index=row_index,
+            exit_index=exit_index,
+            entry_price=float(current_close),
+            exit_price=exit_price,
+            entry_timestamp=entry_timestamp,
+            exit_timestamp=exit_timestamp,
+            predicted_return=float(predicted_return),
+        )
+        open_positions.append(position)
+
+    # ループ終了後に未決済ポジションがあればまとめてクローズ
+    for position in open_positions:
+        close_position(position)
 
     win_rate = wins / trades if trades else 0.0
 
@@ -127,5 +215,5 @@ def simulate_trading_strategy(
         "signals": signals,
         "trades": trades,
         "win_rate": win_rate,
-        "cumulative_return": cumulative_return,
+        "cumulative_return": float(cumulative_return),
     }

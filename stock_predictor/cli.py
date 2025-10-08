@@ -162,14 +162,21 @@ def backtest(
     click.echo(f"使用ラグ: {', '.join(str(l) for l in effective_lags)}")
     click.echo(f"トレード回数: {result['trades']}")
     click.echo(f"勝率: {result['win_rate'] * 100:.2f}%")
-    click.echo(f"累積リターン: {result['cumulative_return'] * 100:.2f}%")
+    click.echo(f"累積損益: {result['cumulative_return']:.2f}")
 
     preview = result["signals"][:10]
     if preview:
-        click.echo("--- シグナル一覧(最大10件) ---")
-        for signal in preview:
-            date = signal["date"]
+        click.echo("--- トレード一覧(最大10件) ---")
+        for trade in preview:
+            entry = trade["entry"]
+            exit_ = trade["exit"]
+            entry_time = entry["timestamp"]
+            exit_time = exit_["timestamp"]
+            predicted = entry.get("predicted_return", 0.0) * 100
+            realized = trade.get("return", 0.0) * 100
+            profit = trade.get("profit", 0.0)
             click.echo(
-                f"{date}: {signal['action']} | 予測リターン {signal['predicted_return'] * 100:.2f}%"
-                f" / 実現リターン {signal['actual_return'] * 100:.2f}%"
+                f"{entry_time.date()} -> {exit_time.date()}: {trade['direction']}"
+                f" | 予測 {predicted:.2f}% / 実現 {realized:.2f}%"
+                f" | 損益 {profit:.2f}"
             )

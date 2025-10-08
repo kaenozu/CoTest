@@ -73,6 +73,8 @@ def _fit_linear_regression(
     Xt = _transpose(X_with_bias)
     XtX = _matmul(Xt, X_with_bias)
     for i in range(len(XtX)):
+        if i == 0:
+            continue
         XtX[i][i] += ridge_lambda
     Xty = _vector_matmul(Xt, y)
     coefficients = _gaussian_elimination([row[:] for row in XtX], list(Xty))

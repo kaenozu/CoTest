@@ -1,6 +1,8 @@
 from datetime import date, timedelta
 
-from stock_predictor.model import train_and_evaluate
+import pytest
+
+from stock_predictor.model import _fit_linear_regression, train_and_evaluate
 
 
 def generate_prices(days: int = 40):
@@ -57,3 +59,13 @@ def test_ridge_lambda_influences_coefficients():
 
     assert len(weak_coeffs) == len(strong_coeffs)
     assert any(abs(a - b) > 1e-6 for a, b in zip(weak_coeffs, strong_coeffs))
+
+
+def test_ridge_regularization_does_not_shrink_bias():
+    X = [[0.0], [0.0], [0.0], [0.0]]
+    y = [2.0, 2.0, 2.0, 2.0]
+
+    coefficients = _fit_linear_regression(X, y, ridge_lambda=10.0)
+
+    assert pytest.approx(2.0, rel=1e-6) == coefficients[0]
+    assert all(abs(coef) < 1e-9 for coef in coefficients[1:])

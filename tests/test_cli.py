@@ -141,3 +141,74 @@ def test_cli_fetches_data_from_yfinance(monkeypatch: pytest.MonkeyPatch):
     assert result.exit_code == 0
     fetch_mock.assert_called_once_with("AAPL", period="60d", interval="1d")
     train_mock.assert_called_once()
+    _, kwargs = train_mock.call_args
+    assert kwargs["cv_splits"] == 5
+
+
+def test_cli_accepts_cv_splits_option_for_forecast(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    csv_path = tmp_path / "prices.csv"
+    create_csv(csv_path)
+
+    runner = CliRunner()
+
+    train_mock = Mock(
+        return_value={
+            "mae": 0.1,
+            "rmse": 0.2,
+            "cv_score": 0.3,
+        }
+    )
+    monkeypatch.setattr("stock_predictor.cli.train_and_evaluate", train_mock)
+
+    result = runner.invoke(
+        main,
+        [
+            "forecast",
+            str(csv_path),
+            "--cv-splits",
+            "7",
+        ],
+    )
+
+    assert result.exit_code == 0
+    train_mock.assert_called_once()
+    _, kwargs = train_mock.call_args
+    assert kwargs["cv_splits"] == 7
+
+
+def test_cli_backtest_accepts_cv_splits_option(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    csv_path = tmp_path / "prices.csv"
+    create_csv(csv_path, days=80)
+
+    runner = CliRunner()
+
+    simulate_mock = Mock(
+        return_value={
+            "trades": 5,
+            "win_rate": 0.6,
+            "cumulative_return": 0.12,
+            "signals": [],
+        }
+    )
+    monkeypatch.setattr(
+        "stock_predictor.cli.simulate_trading_strategy", simulate_mock
+    )
+
+    result = runner.invoke(
+        main,
+        [
+            "backtest",
+            str(csv_path),
+            "--cv-splits",
+            "4",
+        ],
+    )
+
+    assert result.exit_code == 0
+    simulate_mock.assert_called_once()
+    _, kwargs = simulate_mock.call_args
+    assert kwargs["cv_splits"] == 4

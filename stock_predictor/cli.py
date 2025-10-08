@@ -37,6 +37,13 @@ def main() -> None:
     type=float,
     help="リッジ回帰の正則化係数",
 )
+@click.option(
+    "--cv-splits",
+    default=5,
+    show_default=True,
+    type=int,
+    help="交差検証の分割数",
+)
 @click.option("--ticker", type=str, help="yfinanceから取得するティッカー")
 @click.option(
     "--period",
@@ -57,6 +64,7 @@ def forecast(
     horizon: int,
     lags: Tuple[int, ...],
     ridge: float,
+    cv_splits: int,
     ticker: str | None,
     period: str,
     interval: str,
@@ -83,7 +91,7 @@ def forecast(
         data,
         forecast_horizon=horizon,
         lags=effective_lags,
-        cv_splits=5, # デフォルト値を設定
+        cv_splits=cv_splits,
         ridge_lambda=ridge,
     )
 
@@ -119,12 +127,20 @@ def forecast(
     type=float,
     help="売買シグナルとする予測リターンの閾値(比率)",
 )
+@click.option(
+    "--cv-splits",
+    default=5,
+    show_default=True,
+    type=int,
+    help="交差検証の分割数",
+)
 def backtest(
     csv_path: Path,
     horizon: int,
     lags: Tuple[int, ...],
     ridge: float,
     threshold: float,
+    cv_splits: int,
 ) -> None:
     """予測値を用いたシンプルトレード戦略をバックテストする."""
 
@@ -135,7 +151,7 @@ def backtest(
         data,
         forecast_horizon=horizon,
         lags=effective_lags,
-        cv_splits=5, # デフォルト値を設定
+        cv_splits=cv_splits,
         ridge_lambda=ridge,
         threshold=threshold,
     )

@@ -1,3 +1,3 @@
 """株価予測パッケージ."""
 
-__all__ = ["data", "model", "cli"]
+__all__ = ["data", "model", "cli", "universe"]

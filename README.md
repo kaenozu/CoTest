@@ -48,6 +48,21 @@ stock-predictor backtest-portfolio tickers.txt \
 
 `--lags` や `--ridge` などのバックテスト向けオプションも利用できます。結果には最適組み合わせ、各ティッカーの個別損益、ポートフォリオ全体の累積リターン/損益が含まれます。
 
+### ブローカー連携によるライブ注文
+
+`trade` サブコマンドはブローカーAPIを呼び出して注文を送信し、状態更新を監視します。`--broker` には `module:factory` または `module.factory` 形式でファクトリーを指定してください。
+
+```bash
+stock-predictor trade \
+  --broker trading.client:build_paper_client \
+  --ticker AAPL \
+  --side buy \
+  --quantity 5 \
+  --config ops/trading.toml
+```
+
+設定ファイルの詳細は [`docs/operations.md`](docs/operations.md) を参照してください。異常な状態 (`rejected`, `failed` など) が検出されると通知を発行し非0終了コードで終了します。
+
 ### 共通オプション
 
 - `--horizon`: 予測ホライゾン(日数)

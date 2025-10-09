@@ -8,7 +8,7 @@ from typing import Sequence, Tuple
 
 import click
 
-from .backtest import simulate_trading_strategy
+from .backtest import CostModel, simulate_trading_strategy
 from .data import (
     build_latest_feature_row,
     fetch_price_data_from_yfinance,
@@ -62,6 +62,33 @@ def _resolve_live_client(identifier: str):
             param_hint="--live-client",
         )
     return client
+
+
+def _parse_fee_tiers(raw_values: Sequence[str]) -> list[tuple[float, float]]:
+    tiers: list[tuple[float, float]] = []
+    for raw in raw_values:
+        raw = raw.strip()
+        if not raw:
+            continue
+        if ":" in raw:
+            threshold_str, rate_str = raw.split(":", 1)
+        elif "," in raw:
+            threshold_str, rate_str = raw.split(",", 1)
+        else:
+            raise click.BadParameter(
+                "--fee-tier は '閾値:料率' 形式で指定してください",
+                param_hint="--fee-tier",
+            )
+        try:
+            threshold = float(threshold_str)
+            rate = float(rate_str)
+        except ValueError as exc:  # pragma: no cover - 例外経路の保持
+            raise click.BadParameter(
+                "--fee-tier の値を数値に変換できません",
+                param_hint="--fee-tier",
+            ) from exc
+        tiers.append((threshold, rate))
+    return tiers
 
 
 @main.command(context_settings={"allow_extra_args": True})
@@ -268,6 +295,41 @@ def forecast(
     help="約定価格に上乗せするスリッページ(比率)",
 )
 @click.option(
+    "--slippage-long",
+    type=float,
+    help="ロング方向のスリッページ率(指定時は--slippageを上書き)",
+)
+@click.option(
+    "--slippage-short",
+    type=float,
+    help="ショート方向のスリッページ率(指定時は--slippageを上書き)",
+)
+@click.option(
+    "--liquidity-slippage",
+    default=0.0,
+    show_default=True,
+    type=float,
+    help="出来高比率に応じて加算するスリッページ係数",
+)
+@click.option(
+    "--fixed-fee",
+    default=0.0,
+    show_default=True,
+    type=float,
+    help="1回の往復取引ごとに発生する固定手数料",
+)
+@click.option(
+    "--fee-tier",
+    type=str,
+    multiple=True,
+    help="閾値:料率 形式で段階的手数料を指定 (例: --fee-tier 100000:0.001)",
+)
+@click.option(
+    "--tick-size",
+    type=float,
+    help="発注時に適用する価格刻み",
+)
+@click.option(
     "--max-drawdown-limit",
     type=float,
     help="許容最大ドローダウン(比率)。超過で取引停止",
@@ -299,6 +361,12 @@ def backtest(
     position_fraction: float,
     fee_rate: float,
     slippage: float,
+    slippage_long: float | None,
+    slippage_short: float | None,
+    liquidity_slippage: float,
+    fixed_fee: float,
+    fee_tier: Tuple[str, ...],
+    tick_size: float | None,
     max_drawdown_limit: float | None,
     ticker: str | None,
     period: str,
@@ -317,6 +385,30 @@ def backtest(
 
     effective_lags = lags or (1, 2, 3, 5, 10)
 
+    directional_slippage: float | dict[str, float]
+    if slippage_long is not None or slippage_short is not None:
+        directional_slippage = {
+            "long": slippage_long if slippage_long is not None else slippage,
+            "short": slippage_short if slippage_short is not None else slippage,
+        }
+    else:
+        directional_slippage = slippage
+
+    parsed_fee_tiers = _parse_fee_tiers(fee_tier) if fee_tier else None
+    fee_tiers = parsed_fee_tiers or None
+
+    try:
+        model = CostModel(
+            fee_rate=fee_rate,
+            fee_tiers=fee_tiers,
+            fixed_fee=fixed_fee,
+            slippage=directional_slippage,
+            liquidity_slippage=liquidity_slippage,
+            tick_size=tick_size,
+        )
+    except ValueError as exc:
+        raise click.BadParameter(str(exc))
+
     result = simulate_trading_strategy(
         data,
         forecast_horizon=horizon,
@@ -328,6 +420,7 @@ def backtest(
         position_fraction=position_fraction,
         fee_rate=fee_rate,
         slippage=slippage,
+        cost_model=model,
         max_drawdown_limit=max_drawdown_limit,
     )
 

@@ -2,45 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from itertools import combinations
 from typing import Any, Dict, Mapping, MutableMapping, Sequence, Tuple
 
-from .backtest import simulate_trading_strategy
+from .backtest import simulate_portfolio_trading_strategy, simulate_trading_strategy
 from .data import PriceRow
-
-
-@dataclass(frozen=True)
-class CombinationMetrics:
-    """組み合わせごとの集計指標."""
-
-    tickers: Tuple[str, ...]
-    initial_capital: float
-    ending_balance: float
-    total_profit: float
-    cumulative_return: float
-
-
-def _aggregate_metrics(
-    per_ticker: Mapping[str, Mapping[str, Any]],
-    tickers: Tuple[str, ...],
-) -> CombinationMetrics:
-    total_initial = 0.0
-    total_profit = 0.0
-    total_ending = 0.0
-    for ticker in tickers:
-        result = per_ticker[ticker]
-        total_initial += float(result.get("initial_capital", 0.0))
-        total_profit += float(result.get("total_profit", 0.0))
-        total_ending += float(result.get("ending_balance", 0.0))
-    cumulative = total_profit / total_initial if total_initial else 0.0
-    return CombinationMetrics(
-        tickers=tickers,
-        initial_capital=total_initial,
-        ending_balance=total_ending,
-        total_profit=total_profit,
-        cumulative_return=cumulative,
-    )
 
 
 def optimize_ticker_combinations(
@@ -67,34 +33,28 @@ def optimize_ticker_combinations(
         series = price_series_by_ticker[ticker]
         per_ticker_results[ticker] = simulate_trading_strategy(series, **params)
 
-    ranking: list[CombinationMetrics] = []
+    ranking: list[Dict[str, Any]] = []
     for combo in combinations(tickers, combination_size):
-        metrics = _aggregate_metrics(per_ticker_results, combo)
-        ranking.append(metrics)
+        combo_price_map = {ticker: price_series_by_ticker[ticker] for ticker in combo}
+        portfolio_metrics = simulate_portfolio_trading_strategy(combo_price_map, **params)
+        entry = dict(portfolio_metrics)
+        entry["tickers"] = combo
+        ranking.append(entry)
 
     ranking.sort(
-        key=lambda item: (item.cumulative_return, item.total_profit),
+        key=lambda item: (
+            float(item.get("cumulative_return", 0.0)),
+            float(item.get("total_profit", 0.0)),
+        ),
         reverse=True,
     )
 
     best_metrics = ranking[0] if ranking else None
-    best_combination: Tuple[str, ...] = best_metrics.tickers if best_metrics else tuple()
-
-    # dict形式で返却
-    ranking_dicts = [
-        {
-            "tickers": metrics.tickers,
-            "initial_capital": metrics.initial_capital,
-            "ending_balance": metrics.ending_balance,
-            "total_profit": metrics.total_profit,
-            "cumulative_return": metrics.cumulative_return,
-        }
-        for metrics in ranking
-    ]
+    best_combination: Tuple[str, ...] = best_metrics.get("tickers", tuple()) if best_metrics else tuple()
 
     return {
         "best_combination": best_combination,
-        "best_metrics": ranking_dicts[0] if ranking_dicts else None,
-        "ranking": ranking_dicts,
+        "best_metrics": best_metrics,
+        "ranking": ranking,
         "per_ticker_results": dict(per_ticker_results),
     }

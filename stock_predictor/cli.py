@@ -533,8 +533,31 @@ def backtest_portfolio(
             "ポートフォリオ累積損益: "
             f"{float(best_metrics.get('total_profit', 0.0)):.2f}"
         )
+        click.echo(
+            "最終残高: "
+            f"{float(best_metrics.get('ending_balance', 0.0)):.2f}"
+        )
+        click.echo(
+            "トレード回数: "
+            f"{int(best_metrics.get('trades', 0) or 0)}"
+            " / 勝率: "
+            f"{float(best_metrics.get('win_rate', 0.0)) * 100:.2f}%"
+        )
     else:
         click.echo("最適組み合わせを特定できませんでした")
+
+    breakdown = best_metrics.get("per_ticker_breakdown") if best_metrics else {}
+    if breakdown:
+        click.echo("--- ポートフォリオ内訳 ---")
+        for ticker, stats in breakdown.items():
+            capital = float(stats.get("capital_committed", 0.0))
+            profit = float(stats.get("total_profit", 0.0))
+            trades = int(stats.get("trades", 0))
+            win_rate = float(stats.get("win_rate", 0.0)) * 100
+            click.echo(
+                f"{ticker}: 投下資金 {capital:.2f} / 累積損益 {profit:.2f} / "
+                f"トレード {trades} / 勝率 {win_rate:.2f}%"
+            )
 
     click.echo("--- 個別ティッカー成績 ---")
     per_ticker = result.get("per_ticker_results", {})

@@ -17,6 +17,13 @@ from .data import (
 )
 from .portfolio import optimize_ticker_combinations
 from .model import train_and_evaluate
+from .broker import (
+    BrokerConfigurationError,
+    build_notifier,
+    get_operation_logger,
+    load_broker_client,
+    load_runtime_config,
+)
 
 
 @click.group()
@@ -551,3 +558,96 @@ def backtest_portfolio(
             click.echo(
                 f"{idx}. {combo_label} (累積リターン {cumulative:.2f}%, 累積損益 {profit:.2f})"
             )
+
+
+@main.command()
+@click.option("--broker", "broker_identifier", required=True, help="利用するブローカークライアント(module:factory形式)")
+@click.option("--ticker", required=True, help="発注対象のティッカー")
+@click.option("--side", type=click.Choice(["buy", "sell"]), required=True, help="売買区分")
+@click.option("--quantity", type=float, required=True, help="発注数量")
+@click.option(
+    "--order-type",
+    type=click.Choice(["market", "limit"]),
+    default="market",
+    show_default=True,
+    help="注文タイプ",
+)
+@click.option("--limit-price", type=float, help="指値注文時の価格")
+@click.option(
+    "--config",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="運用設定ファイル(TOML)",
+)
+def trade(
+    broker_identifier: str,
+    ticker: str,
+    side: str,
+    quantity: float,
+    order_type: str,
+    limit_price: float | None,
+    config: Path | None,
+) -> None:
+    """学習済みモデルを用いた発注管理を行う."""
+
+    settings = load_runtime_config(config)
+    logger = get_operation_logger(settings.get("logging"))
+    notifier = build_notifier(settings.get("notifications"), logger=logger)
+
+    try:
+        client = load_broker_client(broker_identifier, settings.get("broker"))
+    except BrokerConfigurationError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if quantity <= 0:
+        raise click.BadParameter("--quantity には正の値を指定してください", param_hint="--quantity")
+
+    order_kwargs = {
+        "ticker": ticker,
+        "side": side,
+        "quantity": float(quantity),
+        "order_type": order_type,
+    }
+
+    if order_type == "limit":
+        if limit_price is None:
+            raise click.BadParameter("指値注文には --limit-price が必要です", param_hint="--limit-price")
+        order_kwargs["limit_price"] = float(limit_price)
+    elif limit_price is not None:
+        raise click.BadParameter("成行注文では --limit-price を指定できません", param_hint="--limit-price")
+
+    try:
+        order_id = client.place_order(**order_kwargs)
+    except Exception as exc:  # pragma: no cover - 実際の実装差分検出用
+        notifier.notify(f"注文送信でエラーが発生しました: {exc}", level="error")
+        raise click.ClickException("注文送信に失敗しました") from exc
+
+    logger.info(f"注文 {order_id} を送信しました")
+    click.echo(f"注文ID: {order_id}")
+
+    try:
+        for state in client.stream_order_states(order_id):
+            status = str(state.get("status", "unknown"))
+            logger.info(f"状態更新: {status}")
+            click.echo(f"状態: {status}")
+            filled_qty = state.get("filled_qty")
+            if filled_qty is not None:
+                click.echo(f"約定数量: {filled_qty}")
+
+            if status.lower() in {"rejected", "cancelled", "failed"}:
+                reason = state.get("reason", "理由不明")
+                logger.error(f"状態 {status} で異常を検出: {reason}")
+                notifier.notify(
+                    f"注文 {order_id} で異常 ({status}): {reason}",
+                    level="error",
+                )
+                raise click.ClickException(
+                    f"注文が異常終了しました ({status})\n理由: {reason}"
+                )
+    except click.ClickException:
+        raise
+    except Exception as exc:  # pragma: no cover - 実際のブローカー実装差分用
+        logger.error(f"状態監視中に例外が発生: {exc}")
+        notifier.notify(f"注文 {order_id} の状態監視でエラー: {exc}", level="error")
+        raise click.ClickException("注文状態の監視に失敗しました") from exc
+
+    click.echo("取引完了")

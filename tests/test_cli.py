@@ -301,3 +301,158 @@ def test_cli_backtest_passes_cv_splits(monkeypatch: pytest.MonkeyPatch):
     assert kwargs["fee_rate"] == 0.0
     assert kwargs["slippage"] == 0.0
     assert kwargs["max_drawdown_limit"] is None
+
+
+def test_cli_trade_places_order_and_monitors_state(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    runner = CliRunner()
+
+    config_path = tmp_path / "ops.toml"
+    config_path.write_text("[logging]\nlevel = \"INFO\"\n[broker]\nbase_url = \"https://example.com\"\n")
+
+    config = {
+        "logging": {"level": "INFO"},
+        "notifications": {"channel": "ops"},
+        "broker": {"base_url": "https://example.com"},
+    }
+
+    monkeypatch.setattr("stock_predictor.cli.load_runtime_config", lambda path: config)
+
+    load_calls = []
+
+    broker_client = Mock()
+    broker_client.place_order.return_value = "ORD-1"
+    broker_client.stream_order_states.return_value = iter(
+        [
+            {"status": "accepted", "filled_qty": 0},
+            {"status": "filled", "filled_qty": 10, "avg_price": 150.0},
+        ]
+    )
+
+    def fake_load(identifier, settings):
+        load_calls.append((identifier, settings))
+        assert settings == config["broker"]
+        return broker_client
+
+    monkeypatch.setattr("stock_predictor.cli.load_broker_client", fake_load)
+
+    log_messages = []
+
+    class DummyLogger:
+        def info(self, message):
+            log_messages.append(("info", message))
+
+        def error(self, message):
+            log_messages.append(("error", message))
+
+    monkeypatch.setattr(
+        "stock_predictor.cli.get_operation_logger", lambda conf: DummyLogger()
+    )
+
+    notifications = []
+
+    class DummyNotifier:
+        def notify(self, message, *, level="info"):
+            notifications.append((level, message))
+
+    monkeypatch.setattr(
+        "stock_predictor.cli.build_notifier", lambda conf, **kwargs: DummyNotifier()
+    )
+
+    result = runner.invoke(
+        main,
+        [
+            "trade",
+            "--broker",
+            "dummy.factory",
+            "--ticker",
+            "AAPL",
+            "--side",
+            "buy",
+            "--quantity",
+            "10",
+            "--config",
+            str(config_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert load_calls == [("dummy.factory", config["broker"])]
+    broker_client.place_order.assert_called_once_with(
+        ticker="AAPL", side="buy", quantity=10.0, order_type="market"
+    )
+    broker_client.stream_order_states.assert_called_once_with("ORD-1")
+    assert ("info", "注文 ORD-1 を送信しました") in log_messages
+    assert ("info", "状態更新: accepted") in log_messages
+    assert ("info", "状態更新: filled") in log_messages
+    assert notifications == []
+    assert "状態: accepted" in result.output
+    assert "状態: filled" in result.output
+
+
+def test_cli_trade_notifies_on_failure(monkeypatch: pytest.MonkeyPatch):
+    runner = CliRunner()
+
+    config = {
+        "logging": {"level": "DEBUG"},
+        "notifications": {"channel": "ops"},
+        "broker": {},
+    }
+
+    monkeypatch.setattr("stock_predictor.cli.load_runtime_config", lambda path: config)
+
+    broker_client = Mock()
+    broker_client.place_order.return_value = "ORD-ERR"
+    broker_client.stream_order_states.return_value = iter(
+        [
+            {"status": "rejected", "reason": "insufficient funds"},
+        ]
+    )
+
+    monkeypatch.setattr(
+        "stock_predictor.cli.load_broker_client", lambda identifier, settings: broker_client
+    )
+
+    log_messages = []
+
+    class DummyLogger:
+        def info(self, message):
+            log_messages.append(("info", message))
+
+        def error(self, message):
+            log_messages.append(("error", message))
+
+    monkeypatch.setattr(
+        "stock_predictor.cli.get_operation_logger", lambda conf: DummyLogger()
+    )
+
+    notifications = []
+
+    class DummyNotifier:
+        def notify(self, message, *, level="info"):
+            notifications.append((level, message))
+
+    monkeypatch.setattr(
+        "stock_predictor.cli.build_notifier", lambda conf, **kwargs: DummyNotifier()
+    )
+
+    result = runner.invoke(
+        main,
+        [
+            "trade",
+            "--broker",
+            "dummy.factory",
+            "--ticker",
+            "AAPL",
+            "--side",
+            "buy",
+            "--quantity",
+            "5",
+        ],
+    )
+
+    assert result.exit_code != 0
+    broker_client.place_order.assert_called_once()
+    broker_client.stream_order_states.assert_called_once_with("ORD-ERR")
+    assert any(level == "error" for level, _ in notifications)
+    assert ("error", "状態 rejected で異常を検出: insufficient funds") in log_messages
+    assert "異常" in result.output

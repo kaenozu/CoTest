@@ -1,0 +1,11 @@
+[logging]
+# INFO/DEBUG/WARNING/ERROR などの文字列でログレベルを指定
+level = "INFO"
+
+[notifications]
+# 通知チャネルに関する任意のメタデータ。標準実装ではログ出力のみ。
+channel = "operations"
+
+[broker]
+# ブローカー固有設定。例: APIのエンドポイントやタイムアウトなど。
+timeout = 30

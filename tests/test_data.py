@@ -1,10 +1,11 @@
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
 from types import SimpleNamespace
 
 from stock_predictor.data import (
+    LiveStreamState,
     build_feature_dataset,
     build_feature_matrix,
     fetch_price_data_from_yfinance,
@@ -396,3 +397,85 @@ def sample_prices():
             "Volume": 1500.0,
         },
     ]
+
+def test_stream_live_prices_recovers_from_disconnect_and_retries():
+    events: list[tuple[str, int]] = []
+
+    class FlakyClient:
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        def stream_prices(self, ticker: str):
+            self.call_count += 1
+
+            if self.call_count == 1:
+                def generator():
+                    yield {"timestamp": date(2023, 3, 1), "price": 100.0}
+                    raise ConnectionError("disconnect")
+
+                return generator()
+
+            def second_generator():
+                yield {"timestamp": date(2023, 3, 2), "price": 101.5}
+
+            return second_generator()
+
+    client = FlakyClient()
+    state = LiveStreamState(max_retries=3)
+
+    def on_event(name: str, payload: dict[str, object]) -> None:
+        if name == "reconnect":
+            events.append((name, int(payload.get("attempt", 0))))
+
+    rows = list(
+        stream_live_prices(
+            client,
+            "AAPL",
+            limit=2,
+            state=state,
+            on_event=on_event,
+            timestamp_key="timestamp",
+            timestamp_converter=lambda ts: ts,
+        )
+    )
+
+    assert [row["Close"] for row in rows] == [100.0, 101.5]
+    assert events and events[0][0] == "reconnect"
+    assert client.call_count == 2
+
+
+def test_stream_live_prices_fills_missing_values_from_state():
+    class DummyClient:
+        def stream_prices(self, ticker: str):
+            def generator():
+                yield {
+                    "timestamp": datetime(2023, 4, 1, 10, 0, 0),
+                    "price": 120.0,
+                    "open": 118.0,
+                    "high": 121.0,
+                    "low": 117.5,
+                    "volume": 1500,
+                }
+                yield {
+                    "timestamp": datetime(2023, 4, 1, 10, 1, 0),
+                    "price": 121.0,
+                }
+
+            return generator()
+
+    rows = list(
+        stream_live_prices(
+            DummyClient(),
+            "AAPL",
+            limit=2,
+            timestamp_key="timestamp",
+            state=LiveStreamState(),
+        )
+    )
+
+    assert rows[0]["Open"] == 118.0
+    assert rows[1]["Open"] == 120.0
+    assert rows[1]["High"] == 121.0
+    assert rows[1]["Low"] == 120.0
+    assert rows[1]["Volume"] == 1500.0
+

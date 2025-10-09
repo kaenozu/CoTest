@@ -203,11 +203,18 @@ def test_cli_forecast_accepts_live_mode(monkeypatch: pytest.MonkeyPatch):
         },
     ]
 
-    def fake_stream_live_prices(client, ticker, limit, **kwargs):
+    def fake_stream_live_prices(client, ticker, **kwargs):
         assert ticker == "AAPL"
-        assert limit == 2
+        assert kwargs.get("limit") == 2
+        state = kwargs.get("state")
+        on_event = kwargs.get("on_event")
+        assert state is not None
+        if on_event is not None:
+            on_event("reconnect", {"attempt": 1, "error": "disconnect"})
         for row in live_rows:
             yield row
+        if on_event is not None:
+            on_event("fill", {"fields": ["open", "high"]})
 
     monkeypatch.setattr(
         "stock_predictor.cli.stream_live_prices", fake_stream_live_prices
@@ -244,7 +251,10 @@ def test_cli_forecast_accepts_live_mode(monkeypatch: pytest.MonkeyPatch):
 
     assert result.exit_code == 0
     assert "===== ライブ予測 =====" in result.output
+    assert "[WARN] ライブ接続が中断されました" in result.output
+    assert "[INFO] 欠損フィールドを補完" in result.output
     assert "最新終値" in result.output
+    assert "[ALERT]" in result.output
 
 
 def test_cli_backtest_passes_cv_splits(monkeypatch: pytest.MonkeyPatch):

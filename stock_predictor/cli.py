@@ -10,6 +10,7 @@ import click
 
 from .backtest import simulate_trading_strategy
 from .data import (
+    LiveStreamState,
     build_latest_feature_row,
     fetch_price_data_from_yfinance,
     PriceRow,
@@ -192,7 +193,35 @@ def forecast(
     stream_limit = None if live_limit == 0 else live_limit
 
     click.echo("===== ライブ予測 =====")
-    for latest in stream_live_prices(client, ticker, limit=stream_limit):
+
+    stream_state = LiveStreamState()
+
+    def handle_event(event: str, payload: dict[str, object]) -> None:
+        if event == "reconnect":
+            attempt = payload.get("attempt", 0)
+            error = payload.get("error", "")
+            click.echo(
+                f"[WARN] ライブ接続が中断されました。再接続を試行します (attempt={attempt}): {error}"
+            )
+        elif event == "fill":
+            fields = payload.get("fields", [])
+            if isinstance(fields, (list, tuple)):
+                field_list = ", ".join(str(f) for f in fields)
+            else:
+                field_list = str(fields)
+            timestamp = payload.get("timestamp", "-")
+            click.echo(f"[INFO] 欠損フィールドを補完: {field_list} @ {timestamp}")
+        elif event == "drop":
+            reason = payload.get("reason", "unknown")
+            click.echo(f"[WARN] 欠損データを破棄: {reason}")
+
+    for latest in stream_live_prices(
+        client,
+        ticker,
+        limit=stream_limit,
+        state=stream_state,
+        on_event=handle_event,
+    ):
         history.append(latest)
         try:
             feature_row, _ = build_latest_feature_row(
@@ -208,6 +237,14 @@ def forecast(
         click.echo(
             f"{latest['Date']}: 最新終値 {close_price:.2f} / 予測終値 {prediction:.2f}"
         )
+        if close_price != 0:
+            change_ratio = (prediction - close_price) / close_price
+        else:
+            change_ratio = 0.0
+        if abs(change_ratio) >= 0.02:
+            click.echo(f"[ALERT] 予測終値が現在値から {change_ratio * 100:.2f}% 変動する見込みです")
+        else:
+            click.echo(f"[INFO] 予測変動 {change_ratio * 100:.2f}%")
 
 
 @main.command(context_settings={"allow_extra_args": True})

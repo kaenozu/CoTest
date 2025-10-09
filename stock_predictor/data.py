@@ -8,7 +8,7 @@ import warnings
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Iterable, List, Literal, Sequence, Tuple
+from typing import Any, Callable, Iterable, Iterator, List, Literal, Sequence, Tuple
 
 try:  # pragma: no cover - importガード
     import yfinance
@@ -18,6 +18,28 @@ except ModuleNotFoundError:  # pragma: no cover
 REQUIRED_COLUMNS = ["Date", "Open", "High", "Low", "Close", "Volume"]
 
 PriceRow = dict[str, float | date | datetime]
+
+
+@dataclass
+class LiveStreamState:
+    """ライブストリームの状態を保持し再接続や欠損補完を制御する."""
+
+    max_retries: int = 3
+    retry_attempt: int = 0
+    last_row: PriceRow | None = None
+
+    def reset_retry(self) -> None:
+        self.retry_attempt = 0
+
+    def register_retry(self) -> int:
+        self.retry_attempt += 1
+        return self.retry_attempt
+
+    def can_retry(self) -> bool:
+        return self.retry_attempt <= self.max_retries
+
+    def remember(self, row: PriceRow) -> None:
+        self.last_row = row
 
 
 @dataclass
@@ -171,6 +193,8 @@ def stream_live_prices(
     limit: int | None = None,
     timestamp_key: str = "timestamp",
     timestamp_converter: Callable[[Any], Any] | None = None,
+    state: LiveStreamState | None = None,
+    on_event: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> Iterator[PriceRow]:
     """外部クライアントからライブ株価を購読しPriceRow形式で返す."""
 
@@ -181,49 +205,117 @@ def stream_live_prices(
 
     converter = timestamp_converter or (lambda value: value)
     count = 0
+    stream_state = state or LiveStreamState()
 
-    for payload in client.stream_prices(ticker):
-        if payload is None:
-            continue
-        raw_timestamp = payload.get(timestamp_key)
-        if raw_timestamp is None:
-            continue
-        timestamp = converter(raw_timestamp)
+    def notify(event: str, payload: dict[str, Any]) -> None:
+        if on_event is not None:
+            on_event(event, payload)
+
+    while True:
         try:
-            row_date = _ensure_date(timestamp)
-        except ValueError:
+            source = iter(client.stream_prices(ticker))
+        except Exception as exc:  # pragma: no cover - 起動時の例外経路の確保
+            attempt = stream_state.register_retry()
+            if not stream_state.can_retry():
+                raise
+            notify("reconnect", {"attempt": attempt, "error": str(exc)})
             continue
 
-        try:
-            close_price = float(payload.get("price", payload.get("close")))
-        except (TypeError, ValueError):
-            continue
+        while True:
+            try:
+                payload = next(source)
+            except StopIteration:
+                return
+            except Exception as exc:
+                attempt = stream_state.register_retry()
+                if not stream_state.can_retry():
+                    raise
+                notify("reconnect", {"attempt": attempt, "error": str(exc)})
+                break
 
-        open_price = payload.get("open", close_price)
-        high_price = payload.get("high", max(open_price, close_price))
-        low_price = payload.get("low", min(open_price, close_price))
-        volume = payload.get("volume", 0.0)
+            if payload is None:
+                notify("drop", {"reason": "empty_payload"})
+                continue
 
-        try:
-            open_value = float(open_price)
-            high_value = float(high_price)
-            low_value = float(low_price)
-            volume_value = float(volume) if volume is not None else 0.0
-        except (TypeError, ValueError):
-            continue
+            raw_timestamp = payload.get(timestamp_key)
+            if raw_timestamp is None:
+                notify("drop", {"reason": "missing_timestamp"})
+                continue
 
-        yield {
-            "Date": row_date,
-            "Open": open_value,
-            "High": high_value,
-            "Low": low_value,
-            "Close": close_price,
-            "Volume": volume_value,
-        }
+            timestamp = converter(raw_timestamp)
+            try:
+                row_date = _ensure_date(timestamp)
+            except ValueError:
+                notify("drop", {"reason": "invalid_timestamp", "value": raw_timestamp})
+                continue
 
-        count += 1
-        if limit is not None and count >= limit:
-            break
+            price_value = payload.get("price", payload.get("close"))
+            try:
+                close_price = float(price_value)
+            except (TypeError, ValueError):
+                notify("drop", {"reason": "invalid_price", "value": price_value})
+                continue
+
+            open_price = payload.get("open")
+            high_price = payload.get("high")
+            low_price = payload.get("low")
+            volume = payload.get("volume")
+            has_volume_key = "volume" in payload
+
+            missing_fields: list[str] = []
+            if stream_state.last_row is not None:
+                prev_close = float(stream_state.last_row["Close"])
+                if open_price is None:
+                    open_price = prev_close
+                    missing_fields.append("open")
+                if high_price is None:
+                    high_price = max(prev_close, close_price)
+                    missing_fields.append("high")
+                if low_price is None:
+                    low_price = min(prev_close, close_price)
+                    missing_fields.append("low")
+                if volume is None and not has_volume_key:
+                    volume = stream_state.last_row.get("Volume", 0.0)
+                    missing_fields.append("volume")
+
+            if open_price is None:
+                open_price = close_price
+            if high_price is None:
+                high_price = max(open_price, close_price)
+            if low_price is None:
+                low_price = min(open_price, close_price)
+            if volume is None:
+                volume = 0.0
+
+            try:
+                open_value = float(open_price)
+                high_value = float(high_price)
+                low_value = float(low_price)
+                volume_value = float(volume)
+            except (TypeError, ValueError):
+                notify("drop", {"reason": "invalid_numeric", "payload": payload})
+                continue
+
+            row: PriceRow = {
+                "Date": row_date,
+                "Open": open_value,
+                "High": high_value,
+                "Low": low_value,
+                "Close": close_price,
+                "Volume": volume_value,
+            }
+
+            stream_state.remember(row)
+            stream_state.reset_retry()
+
+            if missing_fields:
+                notify("fill", {"fields": missing_fields, "timestamp": row_date})
+
+            yield row
+
+            count += 1
+            if limit is not None and count >= limit:
+                return
 
 
 def _moving_average(values: Sequence[float], window: int) -> List[float]:

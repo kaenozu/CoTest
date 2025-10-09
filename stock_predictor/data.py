@@ -47,6 +47,24 @@ def _ensure_date(value: Any) -> date:
     raise ValueError("日付インデックスを解釈できませんでした")
 
 
+def _coerce_float(value: Any) -> float:
+    """pandas Seriesなどの単一要素から安全にfloatを得る."""
+
+    if hasattr(value, "item"):
+        try:
+            return float(value.item())
+        except (TypeError, ValueError):
+            pass
+
+    if hasattr(value, "iloc"):
+        try:
+            return float(value.iloc[0])
+        except (TypeError, ValueError, IndexError, AttributeError):
+            pass
+
+    return float(value)
+
+
 def load_price_data(path: str | Path) -> List[PriceRow]:
     """株価CSVを読み込み、日付順に整形する."""
     file_path = Path(path)
@@ -116,18 +134,18 @@ def fetch_price_data_from_yfinance(
     for index, values in cleaned.iterrows():
         try:
             row_date = _ensure_date(index)
-            open_price = float(values["Open"])
-            high_price = float(values["High"])
-            low_price = float(values["Low"])
-            close_price = float(values["Close"])
-            volume = float(values["Volume"])
+            open_price = _coerce_float(values["Open"])
+            high_price = _coerce_float(values["High"])
+            low_price = _coerce_float(values["Low"])
+            close_price = _coerce_float(values["Close"])
+            volume = _coerce_float(values["Volume"])
         except (KeyError, TypeError, ValueError):
             continue
 
         adj_close = None
         if "Adj Close" in values and values["Adj Close"] is not None:
             try:
-                adj_close = float(values["Adj Close"])
+                adj_close = _coerce_float(values["Adj Close"])
             except (TypeError, ValueError):
                 adj_close = None
 

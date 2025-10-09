@@ -257,7 +257,12 @@ def simulate_trading_strategy(
         exit_price = float(exit_row["Close"])
 
         # トレード価格を計算 (スリッページ)
-        entry_price_with_slippage = current_close * (1 + slippage) if direction == "long" else current_close * (1 - slippage)
+        if direction == "long":
+            entry_price_with_slippage = current_close * (1 + slippage)
+            exit_price_with_slippage = exit_price * (1 - slippage)
+        else:
+            entry_price_with_slippage = current_close * (1 - slippage)
+            exit_price_with_slippage = exit_price * (1 + slippage)
 
         # トレード数量を計算
         trade_value = balance * position_fraction
@@ -270,8 +275,8 @@ def simulate_trading_strategy(
             quantity=quantity,
             entry_index=row_index,
             exit_index=exit_index,
-            entry_price=float(current_close),
-            exit_price=exit_price,
+            entry_price=float(entry_price_with_slippage),
+            exit_price=float(exit_price_with_slippage),
             entry_timestamp=entry_timestamp,
             exit_timestamp=exit_timestamp,
             predicted_return=float(predicted_return),

@@ -53,6 +53,9 @@ def test_cli_forecast_runs_with_ticker(monkeypatch: pytest.MonkeyPatch):
             "mae": 0.1,
             "rmse": 0.2,
             "cv_score": 0.3,
+            "forward_mae": 0.15,
+            "forward_rmse": 0.25,
+            "forward_indices": [0, 1],
         }
     )
     monkeypatch.setattr("stock_predictor.cli.train_and_evaluate", train_mock)
@@ -73,6 +76,8 @@ def test_cli_forecast_runs_with_ticker(monkeypatch: pytest.MonkeyPatch):
     )
 
     assert result.exit_code == 0
+    assert "フォワードMAE" in result.output
+    assert "フォワードRMSE" in result.output
     fetch_mock.assert_called_once_with(
         "AAPL", period="60d", interval="1d", adjust="none"
     )
@@ -179,6 +184,9 @@ def test_cli_forecast_accepts_live_mode(monkeypatch: pytest.MonkeyPatch):
             "mae": 0.1,
             "rmse": 0.2,
             "cv_score": 0.3,
+            "forward_mae": 0.15,
+            "forward_rmse": 0.25,
+            "forward_indices": [0, 1],
             "model": DummyModel(),
         }
     )

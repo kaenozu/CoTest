@@ -176,6 +176,10 @@ def forecast(
     click.echo(f"平均絶対誤差(MAE): {result['mae']:.4f}")
     click.echo(f"二乗平均平方根誤差(RMSE): {result['rmse']:.4f}")
     click.echo(f"CV平均RMSE: {result['cv_score']:.4f}")
+    if "forward_mae" in result:
+        click.echo(f"フォワードMAE: {result['forward_mae']:.4f}")
+    if "forward_rmse" in result:
+        click.echo(f"フォワードRMSE: {result['forward_rmse']:.4f}")
 
     if not live and live_client is None:
         return

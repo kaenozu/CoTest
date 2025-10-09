@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
-from typing import Tuple
+from typing import Sequence, Tuple
 
 import click
 
@@ -13,8 +13,10 @@ from .data import (
     build_latest_feature_row,
     fetch_price_data_from_yfinance,
     load_price_data,
+    PriceRow,
     stream_live_prices,
 )
+from .portfolio import optimize_ticker_combinations
 from .model import train_and_evaluate
 
 
@@ -377,4 +379,192 @@ def backtest(
                 f"{entry_time.date()} -> {exit_time.date()}: {trade['direction']}"
                 f" | 予測 {predicted:.2f}% / 実現 {realized:.2f}%"
                 f" | 損益 {profit:.2f}"
+            )
+
+
+@main.command("backtest-portfolio")
+@click.argument(
+    "tickers_file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@click.option("--combination-size", default=2, show_default=True, type=int, help="同時に評価するティッカー数")
+@click.option("--horizon", default=1, show_default=True, type=int, help="予測する営業日数")
+@click.option(
+    "--lags",
+    type=int,
+    multiple=True,
+    help="特徴量に含める終値のラグ(複数指定可)",
+)
+@click.option(
+    "--ridge",
+    default=1e-6,
+    show_default=True,
+    type=float,
+    help="リッジ回帰の正則化係数",
+)
+@click.option(
+    "--threshold",
+    default=0.0,
+    show_default=True,
+    type=float,
+    help="売買シグナルとする予測リターンの閾値(比率)",
+)
+@click.option(
+    "--cv-splits",
+    default=5,
+    show_default=True,
+    type=int,
+    help="交差検証の分割数",
+)
+@click.option(
+    "--initial-capital",
+    default=1_000_000.0,
+    show_default=True,
+    type=float,
+    help="バックテスト開始時の資金",
+)
+@click.option(
+    "--position-fraction",
+    default=1.0,
+    show_default=True,
+    type=float,
+    help="各トレードで投入する資金割合(0-1)",
+)
+@click.option(
+    "--fee-rate",
+    default=0.0,
+    show_default=True,
+    type=float,
+    help="売買時にかかる手数料率",
+)
+@click.option(
+    "--slippage",
+    default=0.0,
+    show_default=True,
+    type=float,
+    help="約定価格に上乗せするスリッページ(比率)",
+)
+@click.option(
+    "--max-drawdown-limit",
+    type=float,
+    help="許容最大ドローダウン(比率)。超過で取引停止",
+)
+@click.option(
+    "--period",
+    type=str,
+    default="60d",
+    show_default=True,
+    help="yfinanceから取得する期間",
+)
+@click.option(
+    "--interval",
+    type=str,
+    default="1d",
+    show_default=True,
+    help="yfinanceから取得する足種",
+)
+def backtest_portfolio(
+    tickers_file: Path,
+    combination_size: int,
+    horizon: int,
+    lags: Tuple[int, ...],
+    ridge: float,
+    threshold: float,
+    cv_splits: int,
+    initial_capital: float,
+    position_fraction: float,
+    fee_rate: float,
+    slippage: float,
+    max_drawdown_limit: float | None,
+    period: str,
+    interval: str,
+) -> None:
+    """ティッカーリストから最適なポートフォリオ組み合わせを探索する."""
+
+    if combination_size < 1:
+        raise click.BadParameter("--combination-size は1以上で指定してください")
+
+    raw_text = tickers_file.read_text(encoding="utf-8")
+    tickers = [
+        line.strip()
+        for line in raw_text.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+    if not tickers:
+        raise click.ClickException("ティッカーリストファイルに有効なティッカーがありません")
+    if combination_size > len(tickers):
+        raise click.BadParameter(
+            "--combination-size がティッカー数を超えています", param_hint="--combination-size"
+        )
+
+    price_map: dict[str, Sequence[PriceRow]] = {}
+    for ticker in tickers:
+        price_map[ticker] = fetch_price_data_from_yfinance(
+            ticker,
+            period=period,
+            interval=interval,
+        )
+
+    effective_lags = lags or (1, 2, 3, 5, 10)
+    backtest_kwargs = {
+        "forecast_horizon": horizon,
+        "lags": tuple(effective_lags),
+        "cv_splits": cv_splits,
+        "ridge_lambda": ridge,
+        "threshold": threshold,
+        "initial_capital": initial_capital,
+        "position_fraction": position_fraction,
+        "fee_rate": fee_rate,
+        "slippage": slippage,
+        "max_drawdown_limit": max_drawdown_limit,
+    }
+
+    result = optimize_ticker_combinations(
+        price_map,
+        combination_size,
+        backtest_kwargs=backtest_kwargs,
+    )
+
+    click.echo("===== ポートフォリオ最適化 =====")
+    click.echo(f"候補ティッカー: {', '.join(tickers)}")
+    click.echo(f"組み合わせサイズ: {combination_size}")
+
+    best_combination = result.get("best_combination", ())
+    best_metrics = result.get("best_metrics") or {}
+    if best_combination:
+        label = ", ".join(best_combination)
+        click.echo(f"最適組み合わせ: {label}")
+        click.echo(
+            "ポートフォリオ累積リターン: "
+            f"{float(best_metrics.get('cumulative_return', 0.0)) * 100:.2f}%"
+        )
+        click.echo(
+            "ポートフォリオ累積損益: "
+            f"{float(best_metrics.get('total_profit', 0.0)):.2f}"
+        )
+    else:
+        click.echo("最適組み合わせを特定できませんでした")
+
+    click.echo("--- 個別ティッカー成績 ---")
+    per_ticker = result.get("per_ticker_results", {})
+    for ticker in tickers:
+        ticker_result = per_ticker.get(ticker)
+        if not ticker_result:
+            continue
+        cumulative = float(ticker_result.get("cumulative_return", 0.0)) * 100
+        profit = float(ticker_result.get("total_profit", 0.0))
+        click.echo(
+            f"{ticker}: 累積リターン {cumulative:.2f}% / 累積損益 {profit:.2f}"
+        )
+
+    ranking = result.get("ranking", [])
+    if ranking:
+        click.echo("--- 上位組み合わせ ---")
+        for idx, entry in enumerate(ranking[:10], start=1):
+            combo_label = ", ".join(entry["tickers"])
+            cumulative = float(entry.get("cumulative_return", 0.0)) * 100
+            profit = float(entry.get("total_profit", 0.0))
+            click.echo(
+                f"{idx}. {combo_label} (累積リターン {cumulative:.2f}%, 累積損益 {profit:.2f})"
             )

@@ -125,6 +125,9 @@ def simulate_trading_strategy(
         exit_price = position.exit_price
         quantity = position.quantity
 
+        if quantity <= 0:
+            return
+
         price_diff = exit_price - entry_price
         if position.direction == "long":
             profit = price_diff * quantity
@@ -241,6 +244,8 @@ def simulate_trading_strategy(
         # トレード数量を計算
         trade_value = balance * position_fraction
         quantity = int(trade_value / entry_price_with_slippage) if entry_price_with_slippage > 0 else 0
+        if quantity <= 0:
+            continue
 
         position = Position(
             direction=direction,

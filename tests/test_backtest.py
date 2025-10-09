@@ -174,6 +174,35 @@ def test_simulate_trading_strategy_generates_tail_signals():
     assert last_signal_date == expected_last_date
 
 
+def test_simulate_trading_strategy_handles_expensive_assets(monkeypatch):
+    prices = generate_prices(start_price=1_200_000.0, days=10, step=0.0)
+
+    def fake_predictions(dataset, *_, **__):
+        values = []
+        for idx, close in enumerate(dataset.closes):
+            if idx == 0:
+                values.append(close * 1.02)
+            else:
+                values.append(close)
+        return values
+
+    monkeypatch.setattr(backtest, "_generate_predictions", fake_predictions)
+
+    result = simulate_trading_strategy(
+        prices,
+        forecast_horizon=1,
+        lags=(1,),
+        rolling_windows=(3,),
+        cv_splits=3,
+        threshold=0.0,
+        initial_capital=1_000_000.0,
+        position_fraction=1.0,
+    )
+
+    assert result["trades"] == 0
+    assert result["signals"] == []
+
+
 def test_simulate_trading_strategy_accounts_for_position_and_fees(monkeypatch):
     prices = generate_prices(days=12)
 

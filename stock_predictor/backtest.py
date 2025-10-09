@@ -117,9 +117,11 @@ def simulate_trading_strategy(
     max_open_positions = 1
 
     halt_due_to_drawdown = False
+    halted = False
+    halt_reason: str | None = None
 
     def close_position(position: Position) -> None:
-        nonlocal trades, wins, total_profit, balance, max_balance, max_drawdown, halt_due_to_drawdown
+        nonlocal trades, wins, total_profit, balance, max_balance, max_drawdown, halt_due_to_drawdown, halted, halt_reason
 
         entry_price = position.entry_price
         exit_price = position.exit_price
@@ -155,6 +157,9 @@ def simulate_trading_strategy(
             max_drawdown = drawdown
         if max_drawdown_limit is not None and max_drawdown > max_drawdown_limit:
             halt_due_to_drawdown = True
+            halted = True
+            if halt_reason is None:
+                halt_reason = "max_drawdown_limit"
 
         trade_record = {
             "direction": position.direction,
@@ -188,6 +193,9 @@ def simulate_trading_strategy(
         if idx >= len(dataset.sample_indices):
             break
         row_index = dataset.sample_indices[idx]
+        current_row = sorted_rows[row_index]
+        current_timestamp = _to_datetime(current_row["Date"])
+        current_close_forced = float(current_row["Close"])
 
         # まず決済期限に達したポジションをクローズ
         remaining_positions: List[Position] = []
@@ -200,6 +208,16 @@ def simulate_trading_strategy(
         open_positions = remaining_positions
         for position in matured_positions:
             close_position(position)
+
+        if halt_due_to_drawdown:
+            positions_to_force_close = open_positions
+            open_positions = []
+            for position in positions_to_force_close:
+                position.exit_index = row_index
+                position.exit_timestamp = current_timestamp
+                position.exit_price = current_close_forced
+                close_position(position)
+            break
 
         if predicted_close is None:
             continue
@@ -227,11 +245,11 @@ def simulate_trading_strategy(
         if exit_index >= len(sorted_rows):
             continue
 
-        entry_row = sorted_rows[row_index]
+        entry_row = current_row
         exit_row = sorted_rows[exit_index]
         entry_date_value = entry_row["Date"]
         exit_date_value = exit_row["Date"]
-        entry_timestamp = _to_datetime(entry_date_value)
+        entry_timestamp = current_timestamp
         exit_timestamp = _to_datetime(exit_date_value)
         exit_price = float(exit_row["Close"])
 
@@ -273,4 +291,6 @@ def simulate_trading_strategy(
         "total_profit": total_profit,
         "balance_history": balance_history,
         "max_drawdown": max_drawdown,
+        "halted": halted,
+        "halt_reason": halt_reason,
     }

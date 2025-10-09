@@ -240,3 +240,62 @@ def test_simulate_trading_strategy_accounts_for_position_and_fees(monkeypatch):
         [1000.0, 1001.7441402908469, 993.9839942940184]
     )
     assert result["max_drawdown"] == pytest.approx(0.007746634778991926)
+
+
+def test_simulate_trading_strategy_applies_slippage_to_execution(monkeypatch):
+    prices = generate_prices(days=10)
+
+    def fake_generate_predictions(dataset, *_, **__):
+        predictions = []
+        for idx, close in enumerate(dataset.closes):
+            if idx == 2:
+                predictions.append(close * 1.05)
+            else:
+                predictions.append(close)
+        return predictions
+
+    monkeypatch.setattr(
+        "stock_predictor.backtest._generate_predictions",
+        fake_generate_predictions,
+    )
+
+    slippage = 0.01
+    initial_capital = 1000.0
+    position_fraction = 0.5
+
+    result = simulate_trading_strategy(
+        prices,
+        forecast_horizon=1,
+        lags=(1,),
+        rolling_windows=(),
+        cv_splits=2,
+        threshold=0.01,
+        initial_capital=initial_capital,
+        position_fraction=position_fraction,
+        fee_rate=0.0,
+        slippage=slippage,
+    )
+
+    assert len(result["signals"]) == 1
+    trade = result["signals"][0]
+
+    entry_index = trade["entry"]["index"]
+    exit_index = trade["exit"]["index"]
+    quantity = trade["quantity"]
+
+    base_entry_price = prices[entry_index]["Close"]
+    base_exit_price = prices[exit_index]["Close"]
+
+    expected_entry_price = base_entry_price * (1 + slippage)
+    expected_exit_price = base_exit_price * (1 - slippage)
+
+    expected_entry_value = expected_entry_price * quantity
+    expected_exit_value = expected_exit_price * quantity
+    expected_pnl = expected_exit_value - expected_entry_value
+
+    assert trade["entry"]["price"] == pytest.approx(expected_entry_price)
+    assert trade["exit"]["price"] == pytest.approx(expected_exit_price)
+    assert trade["pnl"] == pytest.approx(expected_pnl)
+    assert trade["profit"] == pytest.approx(expected_exit_value - expected_entry_value)
+    assert result["ending_balance"] == pytest.approx(initial_capital + expected_pnl)
+

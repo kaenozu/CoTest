@@ -81,6 +81,50 @@ def test_train_and_evaluate_ignores_excessive_lags():
     assert "lag_10_return" not in result["model"].feature_names
 
 
+def test_train_and_evaluate_supports_random_forest():
+    pytest.importorskip("sklearn")
+    from sklearn.ensemble import RandomForestRegressor
+
+    prices = generate_prices()
+
+    result = train_and_evaluate(
+        prices,
+        forecast_horizon=1,
+        lags=(1, 2, 3),
+        cv_splits=3,
+        model_type="random_forest",
+        model_params={"n_estimators": 10, "min_samples_leaf": 1},
+        random_state=0,
+    )
+
+    assert isinstance(result["model"], RandomForestRegressor)
+    assert result["mae"] >= 0
+    assert result["rmse"] >= 0
+    assert result["cv_score"] >= 0
+
+
+def test_train_and_evaluate_supports_gradient_boosting():
+    pytest.importorskip("sklearn")
+    from sklearn.ensemble import GradientBoostingRegressor
+
+    prices = generate_prices()
+
+    result = train_and_evaluate(
+        prices,
+        forecast_horizon=1,
+        lags=(1, 2, 3),
+        cv_splits=3,
+        model_type="gradient_boosting",
+        model_params={"n_estimators": 20, "max_depth": 2},
+        random_state=0,
+    )
+
+    assert isinstance(result["model"], GradientBoostingRegressor)
+    assert result["mae"] >= 0
+    assert result["rmse"] >= 0
+    assert result["cv_score"] >= 0
+
+
 @pytest.fixture
 def sample_prices():
     return [

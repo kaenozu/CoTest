@@ -54,6 +54,10 @@ stock-predictor backtest-portfolio tickers.txt \
 - `--lags`: 終値ラグ(複数指定可)。未指定時は `(1, 2, 3, 5, 10)`
 - `--cv-splits`: クロスバリデーション分割数
 - `--ridge`: リッジ回帰の正則化係数
+- `--feature-set`: 特徴量プリセット。`basic` は従来のラグ・移動統計のみ、`technical`/`all` は RSI や MACD などのテクニカル指標も含みます。
+- `--model`: 学習に利用するアルゴリズム。`linear` に加えて `random_forest` や `gradient_boosting` を選択できます。
+
+`stock_predictor.data` モジュールでは RSI や MACD をはじめとしたテクニカル指標、行ごとに `Fundamentals` キーで与えられた財務指標を自動的に組み込んだ特徴量を生成します。
 
 ## 開発
 

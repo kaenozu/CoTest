@@ -8,7 +8,7 @@ import warnings
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Iterable, List, Literal, Sequence, Tuple
+from typing import Any, Callable, Iterable, Iterator, List, Literal, Mapping, Sequence, Tuple
 
 try:  # pragma: no cover - importガード
     import yfinance
@@ -17,7 +17,7 @@ except ModuleNotFoundError:  # pragma: no cover
 
 REQUIRED_COLUMNS = ["Date", "Open", "High", "Low", "Close", "Volume"]
 
-PriceRow = dict[str, float | date | datetime]
+PriceRow = dict[str, Any]
 
 
 @dataclass
@@ -265,6 +265,84 @@ def _rolling_std(values: Sequence[float], window: int) -> List[float]:
     return out
 
 
+def _relative_strength_index(closes: Sequence[float], period: int = 14) -> List[float]:
+    if period <= 0:
+        raise ValueError("RSIの期間は1以上で指定してください")
+
+    gains = [0.0]
+    losses = [0.0]
+    for i in range(1, len(closes)):
+        change = closes[i] - closes[i - 1]
+        gains.append(max(change, 0.0))
+        losses.append(max(-change, 0.0))
+
+    rsi: List[float] = [50.0]
+    avg_gain = gains[1] if len(gains) > 1 else 0.0
+    avg_loss = losses[1] if len(losses) > 1 else 0.0
+
+    for i in range(1, len(closes)):
+        if i < period:
+            window = float(i)
+            if window > 0:
+                avg_gain = (avg_gain * (window - 1) + gains[i]) / window
+                avg_loss = (avg_loss * (window - 1) + losses[i]) / window
+        else:
+            avg_gain = ((period - 1) * avg_gain + gains[i]) / period
+            avg_loss = ((period - 1) * avg_loss + losses[i]) / period
+
+        if avg_loss == 0:
+            rsi_value = 100.0 if avg_gain > 0 else 0.0
+        else:
+            rs = avg_gain / avg_loss
+            rsi_value = 100.0 - 100.0 / (1.0 + rs)
+        rsi.append(rsi_value)
+
+    if len(rsi) < len(closes):
+        rsi.extend([rsi[-1]] * (len(closes) - len(rsi)))
+    return rsi[: len(closes)]
+
+
+def _macd_components(
+    closes: Sequence[float], fast_period: int = 12, slow_period: int = 26, signal_period: int = 9
+) -> tuple[List[float], List[float], List[float]]:
+    if fast_period <= 0 or slow_period <= 0 or signal_period <= 0:
+        raise ValueError("MACDの期間は1以上で指定してください")
+    if fast_period >= slow_period:
+        raise ValueError("MACDの短期EMAは長期EMAより短く設定してください")
+
+    fast_ema = _exponential_moving_average(closes, fast_period)
+    slow_ema = _exponential_moving_average(closes, slow_period)
+    macd_line = [f - s for f, s in zip(fast_ema, slow_ema)]
+    signal_line = _exponential_moving_average(macd_line, signal_period)
+    histogram = [m - s for m, s in zip(macd_line, signal_line)]
+    return macd_line, signal_line, histogram
+
+
+def _prepare_fundamental_series(
+    rows: Sequence[PriceRow],
+) -> tuple[List[Mapping[str, float] | None], List[str]]:
+    fundamental_series: List[Mapping[str, float] | None] = []
+    fundamental_keys: set[str] = set()
+
+    for row in rows:
+        fundamentals = row.get("Fundamentals")
+        if isinstance(fundamentals, Mapping):
+            normalized: dict[str, float] = {}
+            for key, value in fundamentals.items():
+                try:
+                    numeric = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(numeric):
+                    normalized[key] = numeric
+                    fundamental_keys.add(key)
+            fundamental_series.append(normalized or None)
+        else:
+            fundamental_series.append(None)
+
+    return fundamental_series, sorted(fundamental_keys)
+
+
 def _calculate_feature_columns(
     closes: Sequence[float],
     highs: Sequence[float],
@@ -273,6 +351,9 @@ def _calculate_feature_columns(
     forecast_horizon: int,
     lags: Iterable[int],
     rolling_windows: Iterable[int],
+    technical_indicators: Iterable[str],
+    fundamental_keys: Sequence[str],
+    fundamental_series: Sequence[Mapping[str, float] | None],
 ) -> tuple[List[List[float]], List[str]]:
     feature_names: List[str] = []
     feature_columns: List[List[float]] = []
@@ -326,6 +407,20 @@ def _calculate_feature_columns(
         feature_columns.append(_rolling_std(daily_return, window))
         feature_names.append(f"volatility_{window}")
 
+    indicator_set = {indicator.lower() for indicator in technical_indicators}
+    if "rsi" in indicator_set:
+        rsi_values = _relative_strength_index(closes, period=14)
+        feature_columns.append(rsi_values)
+        feature_names.append("rsi_14")
+    if "macd" in indicator_set:
+        macd_line, signal_line, histogram = _macd_components(closes)
+        feature_columns.append(macd_line)
+        feature_names.append("macd_line_12_26_9")
+        feature_columns.append(signal_line)
+        feature_names.append("macd_signal_12_26_9")
+        feature_columns.append(histogram)
+        feature_names.append("macd_hist_12_26_9")
+
     window = 5
     if len(volumes) >= window:
         volume_z = []
@@ -341,6 +436,27 @@ def _calculate_feature_columns(
         feature_columns.append(volume_z)
         feature_names.append("volume_zscore_5")
 
+    if fundamental_keys:
+        last_values = {key: float("nan") for key in fundamental_keys}
+        columns = {key: [] for key in fundamental_keys}
+        for fundamentals in fundamental_series:
+            if fundamentals:
+                for key in fundamental_keys:
+                    value = fundamentals.get(key)
+                    if value is None:
+                        continue
+                    try:
+                        numeric = float(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if math.isfinite(numeric):
+                        last_values[key] = numeric
+            for key in fundamental_keys:
+                columns[key].append(last_values[key])
+        for key in fundamental_keys:
+            feature_columns.append(columns[key])
+            feature_names.append(f"fund_{key}")
+
     return feature_columns, feature_names
 
 
@@ -349,6 +465,7 @@ def build_feature_dataset(
     forecast_horizon: int = 1,
     lags: Iterable[int] = (1, 2, 3, 5, 10),
     rolling_windows: Iterable[int] = (3, 5, 10, 20),
+    technical_indicators: Iterable[str] | None = None,
 ) -> FeatureDataset:
     """特徴量行列とターゲットを生成する."""
     if forecast_horizon <= 0:
@@ -360,6 +477,10 @@ def build_feature_dataset(
     lows = [float(row["Low"]) for row in sorted_rows]
     volumes = [float(row["Volume"]) for row in sorted_rows]
 
+    indicators = tuple(technical_indicators) if technical_indicators is not None else ("rsi", "macd")
+
+    fundamental_series, fundamental_key_list = _prepare_fundamental_series(sorted_rows)
+
     feature_columns, feature_names = _calculate_feature_columns(
         closes,
         highs,
@@ -368,6 +489,9 @@ def build_feature_dataset(
         forecast_horizon,
         lags,
         rolling_windows,
+        indicators,
+        fundamental_key_list,
+        fundamental_series,
     )
 
     targets: List[float] = []
@@ -402,6 +526,7 @@ def build_feature_matrix(
     forecast_horizon: int = 1,
     lags: Iterable[int] = (1, 2, 3, 5, 10),
     rolling_windows: Iterable[int] = (3, 5, 10, 20),
+    technical_indicators: Iterable[str] | None = None,
 ) -> Tuple[List[List[float]], List[float], List[str]]:
     """従来互換のインターフェースで特徴量を返す."""
 
@@ -410,6 +535,7 @@ def build_feature_matrix(
         forecast_horizon=forecast_horizon,
         lags=lags,
         rolling_windows=rolling_windows,
+        technical_indicators=technical_indicators,
     )
     return dataset.features, dataset.targets, dataset.feature_names
 
@@ -419,6 +545,7 @@ def build_latest_feature_row(
     forecast_horizon: int = 1,
     lags: Iterable[int] = (1, 2, 3, 5, 10),
     rolling_windows: Iterable[int] = (3, 5, 10, 20),
+    technical_indicators: Iterable[str] | None = None,
 ) -> Tuple[List[float], List[str]]:
     """最新レコードから推論用特徴量ベクトルを構築する."""
 
@@ -433,6 +560,9 @@ def build_latest_feature_row(
     lows = [float(row["Low"]) for row in sorted_rows]
     volumes = [float(row["Volume"]) for row in sorted_rows]
 
+    indicators = tuple(technical_indicators) if technical_indicators is not None else ("rsi", "macd")
+    fundamental_series, fundamental_key_list = _prepare_fundamental_series(sorted_rows)
+
     feature_columns, feature_names = _calculate_feature_columns(
         closes,
         highs,
@@ -441,6 +571,9 @@ def build_latest_feature_row(
         forecast_horizon,
         lags,
         rolling_windows,
+        indicators,
+        fundamental_key_list,
+        fundamental_series,
     )
 
     latest_index = len(sorted_rows) - 1

@@ -113,7 +113,21 @@ def test_cli_backtest_portfolio_reads_file_and_outputs_optimal_combo(
         "CCC": _make_price_rows(140.0),
     }
 
-    def fake_fetch(ticker, *, period, interval):
+    def fake_fetch(
+        ticker,
+        *,
+        period,
+        interval,
+        adjust="none",
+        start_date=None,
+        end_date=None,
+        additional_columns=(),
+    ):
+        assert period == "3y"
+        assert interval == "1d"
+        assert adjust == "none"
+        assert start_date is None and end_date is None
+        assert additional_columns == ()
         return data_map[ticker]
 
     monkeypatch.setattr("stock_predictor.cli.fetch_price_data_from_yfinance", fake_fetch)

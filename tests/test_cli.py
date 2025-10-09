@@ -74,12 +74,59 @@ def test_cli_forecast_runs_with_ticker(monkeypatch: pytest.MonkeyPatch):
 
     assert result.exit_code == 0
     fetch_mock.assert_called_once_with(
-        "AAPL", period="60d", interval="1d", adjust="none"
+        "AAPL",
+        period="3y",
+        interval="1d",
+        adjust="none",
+        start_date=None,
+        end_date=None,
+        additional_columns=(),
     )
     train_mock.assert_called_once()
     _, kwargs = train_mock.call_args
     assert kwargs["forecast_horizon"] == 2
     assert kwargs["lags"] == (1, 3)
+
+
+def test_cli_forecast_accepts_date_range_and_columns(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runner = CliRunner()
+
+    dummy_rows = _dummy_price_rows()
+
+    fetch_mock = Mock(return_value=dummy_rows)
+    monkeypatch.setattr(
+        "stock_predictor.cli.fetch_price_data_from_yfinance",
+        fetch_mock,
+    )
+
+    train_mock = Mock(return_value={"mae": 0.1, "rmse": 0.2, "cv_score": 0.3})
+    monkeypatch.setattr("stock_predictor.cli.train_and_evaluate", train_mock)
+
+    result = runner.invoke(
+        main,
+        [
+            "forecast",
+            "--ticker",
+            "AAPL",
+            "--start-date",
+            "2020-01-01",
+            "--end-date",
+            "2023-01-01",
+            "--column",
+            "Dividends",
+            "--column",
+            "Stock Splits",
+        ],
+    )
+
+    assert result.exit_code == 0
+    fetch_mock.assert_called_once()
+    _, kwargs = fetch_mock.call_args
+    assert kwargs["start_date"] == date(2020, 1, 1)
+    assert kwargs["end_date"] == date(2023, 1, 1)
+    assert kwargs["additional_columns"] == ("Dividends", "Stock Splits")
 
 
 def test_cli_forecast_rejects_csv_argument(tmp_path):
@@ -139,8 +186,69 @@ def test_cli_backtest_runs_with_ticker(monkeypatch: pytest.MonkeyPatch):
     )
 
     assert result.exit_code == 0
-    fetch_mock.assert_called_once_with("AAPL", period="60d", interval="1d")
+    fetch_mock.assert_called_once_with(
+        "AAPL",
+        period="3y",
+        interval="1d",
+        adjust="none",
+        start_date=None,
+        end_date=None,
+        additional_columns=(),
+    )
     simulate_mock.assert_called_once()
+
+
+def test_cli_backtest_accepts_date_range_and_columns(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runner = CliRunner()
+
+    dummy_rows = _dummy_price_rows()
+
+    fetch_mock = Mock(return_value=dummy_rows)
+    monkeypatch.setattr(
+        "stock_predictor.cli.fetch_price_data_from_yfinance",
+        fetch_mock,
+    )
+
+    simulate_mock = Mock(
+        return_value={
+            "trades": 1,
+            "win_rate": 1.0,
+            "cumulative_return": 0.1,
+            "initial_capital": 1_000_000.0,
+            "ending_balance": 1_100_000.0,
+            "total_profit": 100_000.0,
+            "max_drawdown": 0.02,
+            "signals": [],
+        }
+    )
+    monkeypatch.setattr(
+        "stock_predictor.cli.simulate_trading_strategy",
+        simulate_mock,
+    )
+
+    result = runner.invoke(
+        main,
+        [
+            "backtest",
+            "--ticker",
+            "AAPL",
+            "--start-date",
+            "2021-01-01",
+            "--end-date",
+            "2023-01-01",
+            "--column",
+            "Dividends",
+        ],
+    )
+
+    assert result.exit_code == 0
+    fetch_mock.assert_called_once()
+    _, kwargs = fetch_mock.call_args
+    assert kwargs["start_date"] == date(2021, 1, 1)
+    assert kwargs["end_date"] == date(2023, 1, 1)
+    assert kwargs["additional_columns"] == ("Dividends",)
 
 
 def test_cli_backtest_rejects_csv_argument(tmp_path):

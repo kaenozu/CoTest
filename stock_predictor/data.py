@@ -79,11 +79,20 @@ AdjustMode = Literal["none", "auto", "manual"]
 
 def fetch_price_data_from_yfinance(
     ticker: str,
-    period: str = "60d",
+    period: str = "3y",
     interval: str = "1d",
     adjust: AdjustMode = "none",
+    *,
+    start_date: date | datetime | None = None,
+    end_date: date | datetime | None = None,
+    additional_columns: Sequence[str] = (),
 ) -> List[PriceRow]:
-    """yfinanceから株価データを取得し、PriceRow形式に変換する."""
+    """yfinanceから株価データを取得し、PriceRow形式に変換する.
+
+    既定では過去3年分のデータを取得するが、`start_date`・`end_date` で範囲を
+    明示できる。`additional_columns` を指定すると終値以外の配当なども合わせて
+    返却する。追加列は欠損時に0で補完される。
+    """
 
     if not ticker:
         raise ValueError("tickerを指定してください")
@@ -96,32 +105,72 @@ def fetch_price_data_from_yfinance(
 
     auto_adjust = adjust == "auto"
 
+    normalized_start = _ensure_date(start_date) if start_date else None
+    normalized_end = _ensure_date(end_date) if end_date else None
+    if normalized_start and normalized_end and normalized_end < normalized_start:
+        raise ValueError("end_date は start_date 以降の日付を指定してください")
+
+    download_kwargs = {
+        "period": period,
+        "interval": interval,
+        "progress": False,
+        "auto_adjust": auto_adjust,
+        "actions": True,
+    }
+    if normalized_start:
+        download_kwargs["start"] = normalized_start.isoformat()
+    if normalized_end:
+        download_kwargs["end"] = normalized_end.isoformat()
+    if normalized_start or normalized_end:
+        download_kwargs.pop("period", None)
+
     try:
-        downloaded = yfinance.download(
-            ticker,
-            period=period,
-            interval=interval,
-            progress=False,
-            auto_adjust=auto_adjust,
-            actions=True,
-        )
+        downloaded = yfinance.download(ticker, **download_kwargs)
     except Exception as exc:  # pragma: no cover - 例外経路を簡潔に確保
         raise RuntimeError("yfinanceからのデータ取得に失敗しました") from exc
 
     if getattr(downloaded, "empty", True):
         raise ValueError("指定条件で取得できる価格データがありません")
 
-    cleaned = downloaded.dropna()
+    base_columns = ["Open", "High", "Low", "Close", "Volume"]
+    additional = tuple(dict.fromkeys(col for col in additional_columns if col))
+
+    try:
+        cleaned = downloaded.dropna(subset=base_columns)
+    except TypeError:
+        cleaned = downloaded.dropna()
+
+    fill_map = {column: 0.0 for column in additional}
+    if fill_map:
+        cleaned = cleaned.fillna(fill_map)
     rows: List[PriceRow] = []
     for index, values in cleaned.iterrows():
         try:
             row_date = _ensure_date(index)
-            open_price = float(values["Open"])
-            high_price = float(values["High"])
-            low_price = float(values["Low"])
-            close_price = float(values["Close"])
-            volume = float(values["Volume"])
-        except (KeyError, TypeError, ValueError):
+        except ValueError:
+            continue
+
+        if normalized_start and row_date < normalized_start:
+            continue
+        if normalized_end and row_date > normalized_end:
+            continue
+
+        def _safe_get(key: str) -> Any:
+            if hasattr(values, "get"):
+                return values.get(key)
+            try:
+                return values[key]
+            except (KeyError, TypeError):
+                return None
+
+        try:
+            open_price = float(_safe_get("Open"))
+            high_price = float(_safe_get("High"))
+            low_price = float(_safe_get("Low"))
+            close_price = float(_safe_get("Close"))
+            volume_raw = _safe_get("Volume")
+            volume = float(volume_raw) if volume_raw is not None else 0.0
+        except (TypeError, ValueError):
             continue
 
         adj_close = None
@@ -145,16 +194,27 @@ def fetch_price_data_from_yfinance(
         elif adjust == "auto" and adj_close is not None:
             close_price = adj_close
 
-        rows.append(
-            {
-                "Date": row_date,
-                "Open": open_price,
-                "High": high_price,
-                "Low": low_price,
-                "Close": close_price,
-                "Volume": volume,
-            }
-        )
+        row: PriceRow = {
+            "Date": row_date,
+            "Open": open_price,
+            "High": high_price,
+            "Low": low_price,
+            "Close": close_price,
+            "Volume": volume,
+        }
+
+        for column in additional:
+            raw_value = _safe_get(column)
+            if raw_value is None:
+                value = 0.0
+            else:
+                try:
+                    value = float(raw_value)
+                except (TypeError, ValueError):
+                    value = raw_value
+            row[column] = value
+
+        rows.append(row)
 
     rows.sort(key=lambda r: r["Date"])  # type: ignore[index]
 

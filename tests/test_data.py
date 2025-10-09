@@ -57,6 +57,93 @@ def test_build_feature_dataset_returns_indices_and_closes(sample_prices):
     assert len(dataset.features) == len(dataset.targets) == 1
 
 
+def test_fetch_price_data_from_yfinance_with_date_range_and_additional_columns(
+    monkeypatch,
+):
+    class DummyFrame:
+        def __init__(self, rows):
+            self._rows = rows
+
+        @property
+        def empty(self):
+            return len(self._rows) == 0
+
+        def dropna(self, subset=None):
+            subset = subset or []
+            filtered = []
+            for idx, values in self._rows:
+                if any(values.get(col) is None for col in subset):
+                    continue
+                filtered.append((idx, values))
+            return DummyFrame(filtered)
+
+        def fillna(self, value=None):
+            filled_rows = []
+            for idx, values in self._rows:
+                filled = {**values}
+                for key, val in filled.items():
+                    if val is None:
+                        filled[key] = value.get(key, 0.0) if isinstance(value, dict) else 0.0
+                filled_rows.append((idx, filled))
+            return DummyFrame(filled_rows)
+
+        def iterrows(self):
+            yield from self._rows
+
+    rows = [
+        (
+            date(2020, 1, 1),
+            {
+                "Open": 10.0,
+                "High": 11.0,
+                "Low": 9.0,
+                "Close": 10.5,
+                "Volume": 1000,
+                "Dividends": 0.4,
+            },
+        ),
+        (
+            date(2020, 1, 2),
+            {
+                "Open": 10.5,
+                "High": 11.5,
+                "Low": 9.5,
+                "Close": 11.0,
+                "Volume": 1200,
+                "Dividends": None,
+            },
+        ),
+    ]
+
+    frame = DummyFrame(rows)
+
+    def fake_download(*args, **kwargs):
+        assert kwargs["start"] == "2020-01-01"
+        assert kwargs["end"] == "2023-01-01"
+        assert kwargs["progress"] is False
+        assert kwargs["actions"] is True
+        return frame
+
+    monkeypatch.setattr(
+        data_module,
+        "yfinance",
+        SimpleNamespace(download=fake_download),
+    )
+
+    data = fetch_price_data_from_yfinance(
+        "AAPL",
+        interval="1d",
+        period="3y",
+        start_date=date(2020, 1, 1),
+        end_date=date(2023, 1, 1),
+        additional_columns=("Dividends",),
+    )
+
+    assert len(data) == 2
+    assert data[0]["Dividends"] == pytest.approx(0.4)
+    assert data[1]["Dividends"] == pytest.approx(0.0)
+
+
 def test_fetch_price_data_from_yfinance(monkeypatch):
     class DummyFrame:
         def __init__(self, rows):
@@ -66,13 +153,17 @@ def test_fetch_price_data_from_yfinance(monkeypatch):
         def empty(self):
             return len(self._rows) == 0
 
-        def dropna(self):
+        def dropna(self, subset=None):
+            subset = subset or []
             filtered = [
                 (idx, values)
                 for idx, values in self._rows
-                if all(value is not None for value in values.values())
+                if all(values.get(col) is not None for col in subset or values.keys())
             ]
             return DummyFrame(filtered)
+
+        def fillna(self, value=None):
+            return self
 
         def iterrows(self):
             yield from self._rows
@@ -143,13 +234,17 @@ def test_fetch_price_data_from_yfinance_with_split_adjustments(monkeypatch):
         def empty(self):
             return len(self._rows) == 0
 
-        def dropna(self):
+        def dropna(self, subset=None):
+            subset = subset or []
             filtered = [
                 (idx, values)
                 for idx, values in self._rows
-                if all(value is not None for value in values.values())
+                if all(values.get(col) is not None for col in subset or values.keys())
             ]
             return DummyFrame(filtered)
+
+        def fillna(self, value=None):
+            return self
 
         def iterrows(self):
             yield from self._rows

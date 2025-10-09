@@ -19,11 +19,14 @@ stock-predictor forecast data/prices.csv --horizon 1 --lags 1 --lags 2 --lags 5
 ### yfinanceから自動取得する場合
 
 - `--ticker` を指定するとCSVパスは指定できません。
-- `--period` と `--interval` は yfinance のパラメータに準拠します。既定値は `60d` と `1d` です。
+- `--period` と `--interval` は yfinance のパラメータに準拠します。既定値は `3y` と `1d` です。
+- `--start-date` と `--end-date` を指定すると期間を明示できます(未指定側は `--period` と組み合わせ可能)。
+- `--column` で `Dividends` や `Stock Splits` など追加のデータ列を取得できます(複数指定可)。
 - `--adjust` で価格調整方法を切り替えられます。`auto` は yfinance の自動調整、`manual` は取得後に分割・配当を反映、既定値の `none` は未調整値を使用します。
 
 ```bash
-stock-predictor forecast --ticker AAPL --period 60d --interval 1d --adjust manual
+stock-predictor forecast --ticker AAPL --period 3y --interval 1d --column Dividends
+stock-predictor forecast --ticker AAPL --start-date 2021-01-01 --end-date 2023-01-01 --adjust manual
 ```
 
 ### 複数ティッカーのポートフォリオ最適化
@@ -42,7 +45,7 @@ stock-predictor backtest-portfolio tickers.txt \
   --combination-size 2 \
   --horizon 1 \
   --threshold 0.005 \
-  --period 60d \
+  --period 3y \
   --interval 1d
 ```
 

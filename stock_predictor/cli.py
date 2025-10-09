@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from datetime import datetime
 from pathlib import Path
 from typing import Sequence, Tuple
 
@@ -90,9 +91,9 @@ def _resolve_live_client(identifier: str):
 @click.option(
     "--period",
     type=str,
-    default="60d",
+    default="3y",
     show_default=True,
-    help="yfinanceから取得する期間",
+    help="yfinanceから取得する期間(開始・終了日指定時は無視)",
 )
 @click.option(
     "--interval",
@@ -107,6 +108,22 @@ def _resolve_live_client(identifier: str):
     default="none",
     show_default=True,
     help="yfinance取得時の価格調整モード",
+)
+@click.option(
+    "--start-date",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="取得開始日(YYYY-MM-DD)",
+)
+@click.option(
+    "--end-date",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="取得終了日(YYYY-MM-DD)",
+)
+@click.option(
+    "--column",
+    "columns",
+    multiple=True,
+    help="追加で取得するデータ列(例: Dividends)",
 )
 @click.option(
     "--live",
@@ -136,6 +153,9 @@ def forecast(
     period: str,
     interval: str,
     adjust: str,
+    start_date: datetime | None,
+    end_date: datetime | None,
+    columns: Tuple[str, ...],
     live: bool,
     live_client: str | None,
     live_limit: int,
@@ -151,13 +171,35 @@ def forecast(
     if ticker is None:
         raise click.UsageError("--ticker を指定してください")
 
+    start_date_value = start_date.date() if start_date else None
+    end_date_value = end_date.date() if end_date else None
+
+    if start_date_value and end_date_value and end_date_value < start_date_value:
+        raise click.BadParameter(
+            "--end-date は --start-date 以降の日付を指定してください",
+            param_hint="--end-date",
+        )
+
+    additional_columns = tuple(dict.fromkeys(columns))
+
     data = fetch_price_data_from_yfinance(
         ticker,
         period=period,
         interval=interval,
         adjust=adjust,
+        start_date=start_date_value,
+        end_date=end_date_value,
+        additional_columns=additional_columns,
     )
-    source_label = f"{ticker} ({period}, {interval})"
+
+    if start_date_value or end_date_value:
+        start_label = start_date_value.isoformat() if start_date_value else "?"
+        end_label = end_date_value.isoformat() if end_date_value else "?"
+        period_label = f"{start_label}〜{end_label}"
+    else:
+        period_label = period
+
+    source_label = f"{ticker} ({period_label}, {interval})"
 
     effective_lags = lags or (1, 2, 3, 5, 10)
 
@@ -276,9 +318,9 @@ def forecast(
 @click.option(
     "--period",
     type=str,
-    default="60d",
+    default="3y",
     show_default=True,
-    help="yfinanceから取得する期間",
+    help="yfinanceから取得する期間(開始・終了日指定時は無視)",
 )
 @click.option(
     "--interval",
@@ -286,6 +328,29 @@ def forecast(
     default="1d",
     show_default=True,
     help="yfinanceから取得する足種",
+)
+@click.option(
+    "--adjust",
+    type=click.Choice(["none", "auto", "manual"]),
+    default="none",
+    show_default=True,
+    help="yfinance取得時の価格調整モード",
+)
+@click.option(
+    "--start-date",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="取得開始日(YYYY-MM-DD)",
+)
+@click.option(
+    "--end-date",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="取得終了日(YYYY-MM-DD)",
+)
+@click.option(
+    "--column",
+    "columns",
+    multiple=True,
+    help="追加で取得するデータ列(例: Dividends)",
 )
 @click.pass_context
 def backtest(
@@ -303,6 +368,10 @@ def backtest(
     ticker: str | None,
     period: str,
     interval: str,
+    adjust: str,
+    start_date: datetime | None,
+    end_date: datetime | None,
+    columns: Tuple[str, ...],
 ) -> None:
     """予測値を用いたシンプルトレード戦略をバックテストする."""
 
@@ -312,8 +381,35 @@ def backtest(
     if ticker is None:
         raise click.UsageError("--ticker を指定してください")
 
-    data = fetch_price_data_from_yfinance(ticker, period=period, interval=interval)
-    source_label = f"{ticker} ({period}, {interval})"
+    start_date_value = start_date.date() if start_date else None
+    end_date_value = end_date.date() if end_date else None
+
+    if start_date_value and end_date_value and end_date_value < start_date_value:
+        raise click.BadParameter(
+            "--end-date は --start-date 以降の日付を指定してください",
+            param_hint="--end-date",
+        )
+
+    additional_columns = tuple(dict.fromkeys(columns))
+
+    data = fetch_price_data_from_yfinance(
+        ticker,
+        period=period,
+        interval=interval,
+        adjust=adjust,
+        start_date=start_date_value,
+        end_date=end_date_value,
+        additional_columns=additional_columns,
+    )
+
+    if start_date_value or end_date_value:
+        start_label = start_date_value.isoformat() if start_date_value else "?"
+        end_label = end_date_value.isoformat() if end_date_value else "?"
+        period_label = f"{start_label}〜{end_label}"
+    else:
+        period_label = period
+
+    source_label = f"{ticker} ({period_label}, {interval})"
 
     effective_lags = lags or (1, 2, 3, 5, 10)
 
@@ -431,9 +527,9 @@ def backtest(
 @click.option(
     "--period",
     type=str,
-    default="60d",
+    default="3y",
     show_default=True,
-    help="yfinanceから取得する期間",
+    help="yfinanceから取得する期間(開始・終了日指定時は無視)",
 )
 @click.option(
     "--interval",
@@ -441,6 +537,29 @@ def backtest(
     default="1d",
     show_default=True,
     help="yfinanceから取得する足種",
+)
+@click.option(
+    "--adjust",
+    type=click.Choice(["none", "auto", "manual"]),
+    default="none",
+    show_default=True,
+    help="yfinance取得時の価格調整モード",
+)
+@click.option(
+    "--start-date",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="取得開始日(YYYY-MM-DD)",
+)
+@click.option(
+    "--end-date",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="取得終了日(YYYY-MM-DD)",
+)
+@click.option(
+    "--column",
+    "columns",
+    multiple=True,
+    help="追加で取得するデータ列(例: Dividends)",
 )
 def backtest_portfolio(
     tickers_file: Path,
@@ -457,6 +576,10 @@ def backtest_portfolio(
     max_drawdown_limit: float | None,
     period: str,
     interval: str,
+    adjust: str,
+    start_date: datetime | None,
+    end_date: datetime | None,
+    columns: Tuple[str, ...],
 ) -> None:
     """ティッカーリストから最適なポートフォリオ組み合わせを探索する."""
 
@@ -477,12 +600,27 @@ def backtest_portfolio(
             "--combination-size がティッカー数を超えています", param_hint="--combination-size"
         )
 
+    start_date_value = start_date.date() if start_date else None
+    end_date_value = end_date.date() if end_date else None
+
+    if start_date_value and end_date_value and end_date_value < start_date_value:
+        raise click.BadParameter(
+            "--end-date は --start-date 以降の日付を指定してください",
+            param_hint="--end-date",
+        )
+
+    additional_columns = tuple(dict.fromkeys(columns))
+
     price_map: dict[str, Sequence[PriceRow]] = {}
     for ticker in tickers:
         price_map[ticker] = fetch_price_data_from_yfinance(
             ticker,
             period=period,
             interval=interval,
+            adjust=adjust,
+            start_date=start_date_value,
+            end_date=end_date_value,
+            additional_columns=additional_columns,
         )
 
     effective_lags = lags or (1, 2, 3, 5, 10)

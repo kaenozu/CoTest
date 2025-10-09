@@ -147,6 +147,30 @@ def test_backtest_limits_open_positions(monkeypatch):
         assert current["entry"]["timestamp"] >= previous["exit"]["timestamp"]
 
 
+def test_backtest_halts_after_exceeding_drawdown_limit(monkeypatch):
+    prices = generate_prices(days=12, step=5.0)
+
+    def fake_predictions(dataset, *_, **__):
+        return [close * 0.9 for close in dataset.closes]
+
+    monkeypatch.setattr(backtest, "_generate_predictions", fake_predictions)
+
+    result = simulate_trading_strategy(
+        prices,
+        forecast_horizon=1,
+        lags=(1,),
+        rolling_windows=(),
+        cv_splits=3,
+        threshold=0.0,
+        max_drawdown_limit=0.01,
+    )
+
+    assert result["halted"] is True
+    assert result["halt_reason"] == "max_drawdown_limit"
+    assert result["trades"] == 1
+    assert len(result["signals"]) == 1
+
+
 def test_simulate_trading_strategy_generates_tail_signals():
     prices = generate_prices(days=16)
 

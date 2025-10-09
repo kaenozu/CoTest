@@ -272,6 +272,30 @@ def forecast(
     type=float,
     help="許容最大ドローダウン(比率)。超過で取引停止",
 )
+@click.option(
+    "--max-open-positions",
+    default=1,
+    show_default=True,
+    type=int,
+    help="同時に保有できるポジション数の上限",
+)
+@click.option(
+    "--allocation-method",
+    type=click.Choice(["fixed-fraction", "equal-weight"]),
+    default="fixed-fraction",
+    show_default=True,
+    help="各ポジションの資金配分方法",
+)
+@click.option(
+    "--long-horizon",
+    type=int,
+    help="ロングポジションの決済ホライゾン(日)",
+)
+@click.option(
+    "--short-horizon",
+    type=int,
+    help="ショートポジションの決済ホライゾン(日)",
+)
 @click.option("--ticker", type=str, help="yfinanceから取得するティッカー")
 @click.option(
     "--period",
@@ -300,6 +324,10 @@ def backtest(
     fee_rate: float,
     slippage: float,
     max_drawdown_limit: float | None,
+    max_open_positions: int,
+    allocation_method: str,
+    long_horizon: int | None,
+    short_horizon: int | None,
     ticker: str | None,
     period: str,
     interval: str,
@@ -317,6 +345,15 @@ def backtest(
 
     effective_lags = lags or (1, 2, 3, 5, 10)
 
+    exit_horizons: dict[str, int] | None = None
+    horizon_map: dict[str, int] = {}
+    if long_horizon is not None:
+        horizon_map["long"] = long_horizon
+    if short_horizon is not None:
+        horizon_map["short"] = short_horizon
+    if horizon_map:
+        exit_horizons = horizon_map
+
     result = simulate_trading_strategy(
         data,
         forecast_horizon=horizon,
@@ -329,6 +366,9 @@ def backtest(
         fee_rate=fee_rate,
         slippage=slippage,
         max_drawdown_limit=max_drawdown_limit,
+        max_open_positions=max_open_positions,
+        allocation_method=allocation_method,
+        exit_horizons=exit_horizons,
     )
 
     click.echo("===== バックテスト結果 =====")

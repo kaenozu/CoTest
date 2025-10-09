@@ -10,6 +10,22 @@ from stock_predictor.cli import main
 from stock_predictor.data import PriceRow
 
 
+def _build_price_rows(*closes: float) -> list[PriceRow]:
+    rows: list[PriceRow] = []
+    for idx, close in enumerate(closes, start=1):
+        rows.append(
+            {
+                "Date": date(2023, 1, idx),
+                "Open": close,
+                "High": close,
+                "Low": close,
+                "Close": close,
+                "Volume": 1_000.0,
+            }
+        )
+    return rows
+
+
 def _make_price_rows(value: float) -> list[PriceRow]:
     return [
         {
@@ -74,6 +90,61 @@ def test_optimize_ticker_combinations_selects_highest_cumulative_return(monkeypa
 
     monkeypatch.setattr(portfolio, "simulate_trading_strategy", fake_simulate)
 
+    combo_metrics = {
+        ("AAA", "BBB"): {
+            "signals": [],
+            "trades": 2,
+            "win_rate": 0.5,
+            "cumulative_return": 0.05,
+            "initial_capital": 200_000.0,
+            "ending_balance": 210_000.0,
+            "total_profit": 10_000.0,
+            "balance_history": [200_000.0, 210_000.0],
+            "max_drawdown": 0.0,
+            "halted": False,
+            "halt_reason": None,
+            "per_ticker_breakdown": {},
+        },
+        ("AAA", "CCC"): {
+            "signals": [],
+            "trades": 2,
+            "win_rate": 1.0,
+            "cumulative_return": 0.09,
+            "initial_capital": 200_000.0,
+            "ending_balance": 218_000.0,
+            "total_profit": 18_000.0,
+            "balance_history": [200_000.0, 218_000.0],
+            "max_drawdown": 0.0,
+            "halted": False,
+            "halt_reason": None,
+            "per_ticker_breakdown": {},
+        },
+        ("BBB", "CCC"): {
+            "signals": [],
+            "trades": 2,
+            "win_rate": 0.5,
+            "cumulative_return": 0.065,
+            "initial_capital": 200_000.0,
+            "ending_balance": 213_000.0,
+            "total_profit": 13_000.0,
+            "balance_history": [200_000.0, 213_000.0],
+            "max_drawdown": 0.0,
+            "halted": False,
+            "halt_reason": None,
+            "per_ticker_breakdown": {},
+        },
+    }
+
+    def fake_portfolio_simulation(price_map_subset, **kwargs):
+        tickers = tuple(sorted(price_map_subset.keys()))
+        return combo_metrics[tickers]
+
+    monkeypatch.setattr(
+        portfolio,
+        "simulate_portfolio_trading_strategy",
+        fake_portfolio_simulation,
+    )
+
     result = portfolio.optimize_ticker_combinations(price_map, 2)
 
     assert call_order.count("AAA") == 1
@@ -93,12 +164,107 @@ def test_optimize_ticker_combinations_selects_highest_cumulative_return(monkeypa
         ("AAA", "BBB"),
     ]
     assert ranking[1]["cumulative_return"] == pytest.approx(0.065)
-    assert ranking[2]["total_profit"] == pytest.approx(9_000.0)
+    assert ranking[2]["total_profit"] == pytest.approx(10_000.0)
 
     per_ticker = result["per_ticker_results"]
     assert per_ticker["AAA"]["cumulative_return"] == 0.07
     assert per_ticker["BBB"]["total_profit"] == 2_000.0
     assert per_ticker["CCC"] is simulate_results["CCC"]
+
+
+def test_optimize_ticker_combinations_respects_portfolio_capital(monkeypatch: pytest.MonkeyPatch):
+    price_map = {
+        "AAA": _build_price_rows(100.0, 110.0, 120.0),
+        "BBB": _build_price_rows(200.0, 220.0, 240.0),
+    }
+
+    def fake_generate_predictions(dataset, cv_splits, ridge_lambda):
+        predictions = [None] * len(dataset.features)
+        if predictions:
+            predictions[0] = dataset.closes[0] * 1.1
+        return predictions
+
+    monkeypatch.setattr(
+        "stock_predictor.backtest._generate_predictions",
+        fake_generate_predictions,
+    )
+
+    from stock_predictor import portfolio
+
+    result = portfolio.optimize_ticker_combinations(
+        price_map,
+        2,
+        backtest_kwargs={
+            "forecast_horizon": 1,
+            "lags": (1,),
+            "rolling_windows": (2,),
+            "cv_splits": 2,
+            "ridge_lambda": 0.0,
+            "threshold": 0.0,
+            "initial_capital": 100_000.0,
+            "position_fraction": 1.0,
+            "fee_rate": 0.0,
+            "slippage": 0.0,
+        },
+    )
+
+    best_metrics = result["best_metrics"]
+    assert best_metrics["initial_capital"] == pytest.approx(100_000.0)
+    assert best_metrics["ending_balance"] == pytest.approx(109_090.90909090909)
+    assert best_metrics["total_profit"] == pytest.approx(9_090.909090909088)
+    assert best_metrics["cumulative_return"] == pytest.approx(0.0909090909)
+    assert best_metrics["trades"] == 1
+    assert [signal["ticker"] for signal in best_metrics["signals"]] == ["AAA"]
+
+
+def test_optimize_ticker_combinations_accounts_for_mixed_returns(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    price_map = {
+        "AAA": _build_price_rows(100.0, 110.0, 120.0),
+        "BBB": _build_price_rows(90.0, 81.0, 72.9),
+    }
+
+    def fake_generate_predictions(dataset, cv_splits, ridge_lambda):
+        predictions = [None] * len(dataset.features)
+        if predictions:
+            predictions[0] = dataset.closes[0] * 1.1
+        return predictions
+
+    monkeypatch.setattr(
+        "stock_predictor.backtest._generate_predictions",
+        fake_generate_predictions,
+    )
+
+    from stock_predictor import portfolio
+
+    result = portfolio.optimize_ticker_combinations(
+        price_map,
+        2,
+        backtest_kwargs={
+            "forecast_horizon": 1,
+            "lags": (1,),
+            "rolling_windows": (2,),
+            "cv_splits": 2,
+            "ridge_lambda": 0.0,
+            "threshold": 0.0,
+            "initial_capital": 100_000.0,
+            "position_fraction": 0.5,
+            "fee_rate": 0.0,
+            "slippage": 0.0,
+        },
+    )
+
+    best_metrics = result["best_metrics"]
+    assert best_metrics["ending_balance"] == pytest.approx(102_045.45454545454)
+    assert best_metrics["total_profit"] == pytest.approx(2_045.454545454544)
+    assert best_metrics["cumulative_return"] == pytest.approx(0.0204545454)
+    assert best_metrics["trades"] == 2
+    tickers = {signal["ticker"] for signal in best_metrics["signals"]}
+    assert tickers == {"AAA", "BBB"}
+    breakdown = best_metrics["per_ticker_breakdown"]
+    assert breakdown["AAA"]["total_profit"] == pytest.approx(4_545.454545454546)
+    assert breakdown["BBB"]["total_profit"] == pytest.approx(-2_500.0)
 
 
 def test_cli_backtest_portfolio_reads_file_and_outputs_optimal_combo(
@@ -131,6 +297,29 @@ def test_cli_backtest_portfolio_reads_file_and_outputs_optimal_combo(
                 "total_profit": 18_000.0,
                 "initial_capital": 200_000.0,
                 "ending_balance": 218_000.0,
+                "trades": 4,
+                "win_rate": 0.75,
+                "per_ticker_breakdown": {
+                    "AAA": {
+                        "capital_committed": 100_000.0,
+                        "total_profit": 7_000.0,
+                        "trades": 2,
+                        "win_rate": 1.0,
+                    },
+                    "BBB": {
+                        "capital_committed": 80_000.0,
+                        "total_profit": 2_000.0,
+                        "trades": 1,
+                        "win_rate": 1.0,
+                    },
+                    "CCC": {
+                        "capital_committed": 120_000.0,
+                        "total_profit": 9_000.0,
+                        "trades": 1,
+                        "win_rate": 1.0,
+                    },
+                },
+                "signals": [],
             },
             "ranking": [
                 {
@@ -186,6 +375,11 @@ def test_cli_backtest_portfolio_reads_file_and_outputs_optimal_combo(
     assert result.exit_code == 0
     assert "最適組み合わせ: AAA, CCC" in result.output
     assert "ポートフォリオ累積リターン: 9.00%" in result.output
+    assert "ポートフォリオ累積損益: 18000.00" in result.output
+    assert "最終残高: 218000.00" in result.output
+    assert "トレード回数: 4 / 勝率: 75.00%" in result.output
+    assert "--- ポートフォリオ内訳 ---" in result.output
+    assert "AAA: 投下資金 100000.00 / 累積損益 7000.00 / トレード 2 / 勝率 100.00%" in result.output
     assert "AAA: 累積リターン 7.00% / 累積損益 7000.00" in result.output
 
     assert captured["combination_size"] == 2

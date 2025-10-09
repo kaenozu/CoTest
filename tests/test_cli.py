@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from stock_predictor.backtest import CostModel
 from stock_predictor.cli import main
 
 
@@ -141,6 +142,77 @@ def test_cli_backtest_runs_with_ticker(monkeypatch: pytest.MonkeyPatch):
     assert result.exit_code == 0
     fetch_mock.assert_called_once_with("AAPL", period="60d", interval="1d")
     simulate_mock.assert_called_once()
+    _, kwargs = simulate_mock.call_args
+    assert isinstance(kwargs["cost_model"], CostModel)
+    model = kwargs["cost_model"]
+    assert model.fee_rate == pytest.approx(0.0)
+    assert model.fixed_fee == pytest.approx(0.0)
+    assert model.tick_size is None
+    assert model.fee_tiers is None
+
+
+def test_cli_backtest_parses_cost_options(monkeypatch: pytest.MonkeyPatch):
+    runner = CliRunner()
+
+    dummy_rows = _dummy_price_rows()
+
+    fetch_mock = Mock(return_value=dummy_rows)
+    monkeypatch.setattr(
+        "stock_predictor.cli.fetch_price_data_from_yfinance", fetch_mock
+    )
+
+    simulate_mock = Mock(
+        return_value={
+            "trades": 0,
+            "win_rate": 0.0,
+            "cumulative_return": 0.0,
+            "initial_capital": 1_000_000.0,
+            "ending_balance": 1_000_000.0,
+            "total_profit": 0.0,
+            "max_drawdown": 0.0,
+            "signals": [],
+        }
+    )
+    monkeypatch.setattr(
+        "stock_predictor.cli.simulate_trading_strategy", simulate_mock
+    )
+
+    result = runner.invoke(
+        main,
+        [
+            "backtest",
+            "--ticker",
+            "AAPL",
+            "--fee-rate",
+            "0.001",
+            "--fixed-fee",
+            "50",
+            "--fee-tier",
+            "100000:0.0005",
+            "--fee-tier",
+            "500000:0.0003",
+            "--slippage",
+            "0.001",
+            "--slippage-short",
+            "0.002",
+            "--liquidity-slippage",
+            "0.1",
+            "--tick-size",
+            "0.05",
+        ],
+    )
+
+    assert result.exit_code == 0
+    simulate_mock.assert_called_once()
+    _, kwargs = simulate_mock.call_args
+    model = kwargs["cost_model"]
+    assert isinstance(model, CostModel)
+    assert model.fee_rate == pytest.approx(0.001)
+    assert model.fixed_fee == pytest.approx(50.0)
+    assert model.fee_tiers == [(100000.0, 0.0005), (500000.0, 0.0003)]
+    assert model.slippage == {"long": 0.001, "short": 0.002}
+    assert model.liquidity_slippage == pytest.approx(0.1)
+    assert model.tick_size == pytest.approx(0.05)
 
 
 def test_cli_backtest_rejects_csv_argument(tmp_path):

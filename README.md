@@ -55,6 +55,25 @@ stock-predictor backtest-portfolio tickers.txt \
 - `--cv-splits`: クロスバリデーション分割数
 - `--ridge`: リッジ回帰の正則化係数
 
+### バックテスト時のコストモデル
+
+`backtest` サブコマンドでは以下のオプションを組み合わせて、段階的な手数料や方向別スリッページ、ティックサイズなどを表現できます。
+
+- `--fee-rate`: 取引金額に比例する基本手数料率。
+- `--fee-tier`: `閾値:料率` 形式で段階的手数料を複数指定。(例: `--fee-tier 100000:0.0005`)
+- `--fixed-fee`: 各トレード(往復)ごとに加算する固定手数料。
+- `--slippage`: 方向に依らない基本スリッページ率。
+- `--slippage-long` / `--slippage-short`: ロング・ショート個別のスリッページ。未指定側は `--slippage` の値を利用。
+- `--liquidity-slippage`: 取引数量と出来高の比率に応じて追加されるスリッページ係数。
+- `--tick-size`: 約定価格を丸める最小刻み。
+
+```bash
+stock-predictor backtest --ticker AAPL --threshold 0.002 \
+  --fee-rate 0.001 --fee-tier 100000:0.0005 --fixed-fee 20 \
+  --slippage 0.0005 --slippage-short 0.001 --liquidity-slippage 0.05 \
+  --tick-size 0.05
+```
+
 ## 開発
 
 テストは `pytest` で実行できます。

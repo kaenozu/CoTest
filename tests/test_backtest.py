@@ -5,7 +5,7 @@ import math
 import pytest
 
 from stock_predictor import backtest
-from stock_predictor.backtest import simulate_trading_strategy
+from stock_predictor.backtest import CostModel, simulate_trading_strategy
 from stock_predictor.data import build_feature_dataset
 
 
@@ -26,6 +26,25 @@ def generate_prices(start_price: float = 100.0, days: int = 12, step: float = 1.
             }
         )
     return prices
+
+
+def build_cost_model_prices():
+    closes = [100, 101, 102, 103, 104, 108, 102, 101]
+    volumes = [1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700]
+    base_date = date(2023, 1, 1)
+    rows = []
+    for offset, (close, volume) in enumerate(zip(closes, volumes)):
+        rows.append(
+            {
+                "Date": base_date + timedelta(days=offset),
+                "Open": close - 1,
+                "High": close + 1,
+                "Low": close - 1.5,
+                "Close": float(close),
+                "Volume": float(volume),
+            }
+        )
+    return rows
 
 
 @pytest.mark.parametrize("threshold", [0.0, 0.002])
@@ -197,6 +216,62 @@ def test_simulate_trading_strategy_generates_tail_signals():
 
     assert last_signal_date == expected_last_date
 
+
+def test_simulate_trading_strategy_applies_cost_model(monkeypatch):
+    prices = build_cost_model_prices()
+
+    def fake_predictions(dataset, *_, **__):
+        values = []
+        for close, idx in zip(dataset.closes, dataset.sample_indices):
+            if idx == dataset.sample_indices[0]:
+                values.append(close * 1.05)
+            elif idx == dataset.sample_indices[1]:
+                values.append(close * 0.95)
+            else:
+                values.append(close)
+        return values
+
+    monkeypatch.setattr(backtest, "_generate_predictions", fake_predictions)
+
+    cost_model = CostModel(
+        fee_tiers=[(0.0, 0.001), (1500.0, 0.0004)],
+        fixed_fee=2.0,
+        slippage={"long": 0.002, "short": 0.004},
+        liquidity_slippage=0.05,
+        tick_size=0.05,
+    )
+
+    result = simulate_trading_strategy(
+        prices,
+        forecast_horizon=1,
+        lags=(1,),
+        rolling_windows=(),
+        cv_splits=3,
+        threshold=0.0,
+        initial_capital=10_000.0,
+        position_fraction=0.2,
+        cost_model=cost_model,
+    )
+
+    signals = result["signals"]
+    assert len(signals) == 2
+
+    first, second = signals
+    assert first["direction"] == "long"
+    assert first["quantity"] == 19
+    assert first["entry"]["price"] == pytest.approx(104.3)
+    assert first["exit"]["price"] == pytest.approx(107.7)
+    assert first["fees"] == pytest.approx(3.6112, rel=1e-6)
+    assert first["pnl"] == pytest.approx(60.9888, rel=1e-6)
+
+    assert second["direction"] == "short"
+    assert second["quantity"] == 18
+    assert second["entry"]["price"] == pytest.approx(107.5)
+    assert second["exit"]["price"] == pytest.approx(102.5)
+    assert second["fees"] == pytest.approx(3.512, rel=1e-6)
+    assert second["pnl"] == pytest.approx(86.488, rel=1e-6)
+
+    assert result["ending_balance"] == pytest.approx(10_147.4768, rel=1e-6)
 
 def test_simulate_trading_strategy_handles_expensive_assets(monkeypatch):
     prices = generate_prices(start_price=1_200_000.0, days=10, step=0.0)

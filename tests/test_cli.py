@@ -69,6 +69,10 @@ def test_cli_forecast_runs_with_ticker(monkeypatch: pytest.MonkeyPatch):
             "1",
             "--lags",
             "3",
+            "--feature-set",
+            "basic",
+            "--model",
+            "gradient_boosting",
         ],
     )
 
@@ -80,6 +84,8 @@ def test_cli_forecast_runs_with_ticker(monkeypatch: pytest.MonkeyPatch):
     _, kwargs = train_mock.call_args
     assert kwargs["forecast_horizon"] == 2
     assert kwargs["lags"] == (1, 3)
+    assert kwargs["technical_indicators"] == ()
+    assert kwargs["model_type"] == "gradient_boosting"
 
 
 def test_cli_forecast_rejects_csv_argument(tmp_path):
@@ -214,6 +220,7 @@ def test_cli_forecast_accepts_live_mode(monkeypatch: pytest.MonkeyPatch):
     )
 
     def fake_build_latest_feature_row(prices, **kwargs):
+        assert kwargs["technical_indicators"] == ("rsi", "macd")
         return [float(len(prices))], ["dummy"]
 
     monkeypatch.setattr(

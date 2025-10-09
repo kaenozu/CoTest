@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Sequence
 
 from .data import build_feature_matrix, PriceRow
 
@@ -103,21 +103,107 @@ def _time_series_splits(n_samples: int, n_splits: int):
 
         yield train_indices, test_indices
 
+
+def _ensure_float_list(values: Any) -> List[float]:
+    if isinstance(values, list):
+        return [float(v) for v in values]
+    if hasattr(values, "tolist"):
+        converted = values.tolist()
+        if isinstance(converted, list):
+            return [float(v) for v in converted]
+        return [float(v) for v in list(converted)]
+    return [float(v) for v in values]
+
+
+def _create_sklearn_estimator(
+    model_type: str, model_params: Dict[str, Any] | None, random_state: int | None
+):
+    params: Dict[str, Any] = dict(model_params or {})
+    if random_state is not None and "random_state" not in params:
+        params["random_state"] = random_state
+
+    if model_type == "random_forest":
+        try:
+            from sklearn.ensemble import RandomForestRegressor
+        except ModuleNotFoundError as exc:  # pragma: no cover - 環境依存
+            raise RuntimeError("random_forest モデルには scikit-learn が必要です") from exc
+
+        return RandomForestRegressor(**params)
+    if model_type == "gradient_boosting":
+        try:
+            from sklearn.ensemble import GradientBoostingRegressor
+        except ModuleNotFoundError as exc:  # pragma: no cover - 環境依存
+            raise RuntimeError("gradient_boosting モデルには scikit-learn が必要です") from exc
+
+        return GradientBoostingRegressor(**params)
+
+    raise ValueError(f"未対応の model_type: {model_type}")
+
 def train_and_evaluate(
     prices: Sequence[PriceRow],
     forecast_horizon: int = 1,
     lags: Iterable[int] = (1, 2, 3, 5, 10),
     cv_splits: int = 5,
     ridge_lambda: float = 1e-6,
+    *,
+    technical_indicators: Iterable[str] | None = None,
+    model_type: str = "linear",
+    model_params: Dict[str, Any] | None = None,
+    random_state: int | None = None,
 ) -> dict[str, object]:
     """履歴データでモデルを学習し、指標を返す."""
-    X, y, feature_names = build_feature_matrix(prices, forecast_horizon=forecast_horizon, lags=lags)
+    X, y, feature_names = build_feature_matrix(
+        prices,
+        forecast_horizon=forecast_horizon,
+        lags=lags,
+        technical_indicators=technical_indicators,
+    )
     if len(X) == 0:
         raise ValueError("学習に利用できるサンプルがありません")
     if cv_splits < 1:
         raise ValueError("cv_splits は1以上で指定してください")
     if ridge_lambda < 0:
         raise ValueError("ridge_lambda は0以上で指定してください")
+
+    normalized_type = model_type.lower()
+
+    if normalized_type == "linear":
+        mae_scores: List[float] = []
+        rmse_scores: List[float] = []
+        for train_idx, test_idx in _time_series_splits(len(X), cv_splits):
+            X_train = [X[i] for i in train_idx]
+            y_train = [y[i] for i in train_idx]
+            X_test = [X[i] for i in test_idx]
+            y_test = [y[i] for i in test_idx]
+            if not X_train or not X_test:
+                continue
+            coefficients = _fit_linear_regression(X_train, y_train, ridge_lambda=ridge_lambda)
+            model = LinearModel(feature_names, coefficients)
+            predictions = model.predict(X_test)
+            mae_scores.append(_mean_absolute_error(y_test, predictions))
+            rmse_scores.append(_root_mean_squared_error(y_test, predictions))
+
+        final_coefficients = _fit_linear_regression(X, y, ridge_lambda=ridge_lambda)
+        final_model = LinearModel(feature_names, final_coefficients)
+        full_predictions = final_model.predict(X)
+        mae = _mean_absolute_error(y, full_predictions)
+        rmse = _root_mean_squared_error(y, full_predictions)
+
+        cv_rmse = sum(rmse_scores) / len(rmse_scores) if rmse_scores else rmse
+
+        return {
+            "model": final_model,
+            "mae": mae,
+            "rmse": rmse,
+            "cv_score": cv_rmse,
+        }
+
+    estimator = _create_sklearn_estimator(normalized_type, model_params, random_state)
+
+    try:
+        from sklearn.base import clone
+    except ModuleNotFoundError as exc:  # pragma: no cover - 環境依存
+        raise RuntimeError("学習には scikit-learn が必要です") from exc
 
     mae_scores: List[float] = []
     rmse_scores: List[float] = []
@@ -128,18 +214,27 @@ def train_and_evaluate(
         y_test = [y[i] for i in test_idx]
         if not X_train or not X_test:
             continue
-        coefficients = _fit_linear_regression(X_train, y_train, ridge_lambda=ridge_lambda)
-        model = LinearModel(feature_names, coefficients)
-        predictions = model.predict(X_test)
+        model = clone(estimator)
+        model.fit(X_train, y_train)
+        predictions = _ensure_float_list(model.predict(X_test))
         mae_scores.append(_mean_absolute_error(y_test, predictions))
         rmse_scores.append(_root_mean_squared_error(y_test, predictions))
 
-    final_coefficients = _fit_linear_regression(X, y, ridge_lambda=ridge_lambda)
-    final_model = LinearModel(feature_names, final_coefficients)
-    full_predictions = final_model.predict(X)
-    mae = _mean_absolute_error(y, full_predictions)
-    rmse = _root_mean_squared_error(y, full_predictions)
+    final_model = clone(estimator)
+    final_model.fit(X, y)
+    predictions = _ensure_float_list(final_model.predict(X))
 
+    if not hasattr(final_model, "feature_names"):
+        setattr(final_model, "feature_names", list(feature_names))
+
+    if not hasattr(final_model, "predict_one"):
+        def _predict_one(features: Sequence[float]) -> float:
+            return float(final_model.predict([list(features)])[0])
+
+        setattr(final_model, "predict_one", _predict_one)
+
+    mae = _mean_absolute_error(y, predictions)
+    rmse = _root_mean_squared_error(y, predictions)
     cv_rmse = sum(rmse_scores) / len(rmse_scores) if rmse_scores else rmse
 
     return {

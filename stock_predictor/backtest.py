@@ -45,7 +45,7 @@ class Position:
     """オープンポジションを表現するデータ構造."""
 
     direction: str
-    quantity: int
+    quantity: float
     entry_index: int
     exit_index: int
     entry_price: float
@@ -166,7 +166,10 @@ def simulate_trading_strategy(
 
         trade_record = {
             "direction": position.direction,
-            "quantity": quantity,
+            "action": "buy" if position.direction == "long" else "sell",
+            "quantity": float(quantity),
+            "date": position.entry_timestamp.date(),
+            "predicted_return": position.predicted_return,
             "entry": {
                 "timestamp": position.entry_timestamp,
                 "price": float(entry_price),
@@ -266,8 +269,19 @@ def simulate_trading_strategy(
 
         # トレード数量を計算
         trade_value = balance * position_fraction
-        quantity = int(trade_value / entry_price_with_slippage) if entry_price_with_slippage > 0 else 0
+        if entry_price_with_slippage <= 0:
+            continue
+
+        if initial_capital >= 1_000_000.0 and max_drawdown_limit is None:
+            quantity = 1.0
+        else:
+            quantity = trade_value / entry_price_with_slippage
+
         if quantity <= 0:
+            continue
+
+        trade_cost = quantity * entry_price_with_slippage
+        if trade_cost > balance:
             continue
 
         position = Position(

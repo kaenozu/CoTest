@@ -1,6 +1,8 @@
 import warnings
 from datetime import date
 
+import math
+
 import pytest
 
 from types import SimpleNamespace
@@ -56,6 +58,45 @@ def test_build_feature_dataset_returns_indices_and_closes(sample_prices):
     assert dataset.sample_indices == [4]
     assert dataset.closes == [14.5]
     assert len(dataset.features) == len(dataset.targets) == 1
+
+
+def test_build_feature_dataset_adds_rsi_and_macd(sample_prices):
+    dataset = build_feature_dataset(
+        sample_prices,
+        forecast_horizon=1,
+        lags=(),
+        rolling_windows=(),
+    )
+
+    assert "rsi_14" in dataset.feature_names
+    assert "macd_line_12_26_9" in dataset.feature_names
+    assert "macd_signal_12_26_9" in dataset.feature_names
+
+    rsi_index = dataset.feature_names.index("rsi_14")
+    macd_index = dataset.feature_names.index("macd_line_12_26_9")
+    assert all(math.isfinite(row[rsi_index]) for row in dataset.features)
+    assert all(math.isfinite(row[macd_index]) for row in dataset.features)
+
+
+def test_build_feature_dataset_merges_fundamental_features(sample_prices_with_fundamentals):
+    dataset = build_feature_dataset(
+        sample_prices_with_fundamentals,
+        forecast_horizon=1,
+        lags=(),
+        rolling_windows=(),
+    )
+
+    assert "fund_pe_ratio" in dataset.feature_names
+    assert "fund_eps" in dataset.feature_names
+
+    pe_index = dataset.feature_names.index("fund_pe_ratio")
+    eps_index = dataset.feature_names.index("fund_eps")
+
+    first_row = dataset.features[0]
+    expected_index = dataset.sample_indices[0]
+    expected_fundamentals = sample_prices_with_fundamentals[expected_index]["Fundamentals"]
+    assert pytest.approx(expected_fundamentals["pe_ratio"]) == first_row[pe_index]
+    assert pytest.approx(expected_fundamentals["eps"]) == first_row[eps_index]
 
 
 def test_fetch_price_data_from_yfinance(monkeypatch):
@@ -452,3 +493,21 @@ def sample_prices():
             "Volume": 1500.0,
         },
     ]
+
+
+@pytest.fixture
+def sample_prices_with_fundamentals(sample_prices):
+    enriched = []
+    base_pe = 15.0
+    base_eps = 3.5
+    for offset, row in enumerate(sample_prices):
+        enriched.append(
+            {
+                **row,
+                "Fundamentals": {
+                    "pe_ratio": base_pe + offset * 0.5,
+                    "eps": base_eps + offset * 0.1,
+                },
+            }
+        )
+    return enriched

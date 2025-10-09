@@ -18,6 +18,19 @@ from .data import (
 from .portfolio import optimize_ticker_combinations
 from .model import train_and_evaluate
 
+FEATURE_SET_TO_INDICATORS = {
+    "basic": tuple(),
+    "technical": ("rsi", "macd"),
+    "all": ("rsi", "macd"),
+}
+
+
+def _resolve_technical_indicators(feature_set: str) -> Tuple[str, ...]:
+    try:
+        return FEATURE_SET_TO_INDICATORS[feature_set]
+    except KeyError as exc:  # pragma: no cover - clickで検証されるため
+        raise click.ClickException(f"未知の特徴量セットが指定されました: {feature_set}") from exc
+
 
 @click.group()
 def main() -> None:
@@ -86,6 +99,21 @@ def _resolve_live_client(identifier: str):
     type=int,
     help="交差検証の分割数",
 )
+@click.option(
+    "--feature-set",
+    type=click.Choice(sorted(FEATURE_SET_TO_INDICATORS.keys())),
+    default="technical",
+    show_default=True,
+    help="利用する特徴量のプリセット",
+)
+@click.option(
+    "--model",
+    "model_name",
+    type=click.Choice(["linear", "random_forest", "gradient_boosting"]),
+    default="linear",
+    show_default=True,
+    help="学習に用いるアルゴリズム",
+)
 @click.option("--ticker", type=str, help="yfinanceから取得するティッカー")
 @click.option(
     "--period",
@@ -132,6 +160,8 @@ def forecast(
     lags: Tuple[int, ...],
     ridge: float,
     cv_splits: int,
+    feature_set: str,
+    model_name: str,
     ticker: str | None,
     period: str,
     interval: str,
@@ -161,18 +191,24 @@ def forecast(
 
     effective_lags = lags or (1, 2, 3, 5, 10)
 
+    technical_indicators = _resolve_technical_indicators(feature_set)
+
     result = train_and_evaluate(
         data,
         forecast_horizon=horizon,
         lags=effective_lags,
         cv_splits=cv_splits,
         ridge_lambda=ridge,
+        technical_indicators=technical_indicators,
+        model_type=model_name,
     )
 
     click.echo("===== 予測評価結果 =====")
     click.echo(f"使用データ: {source_label}")
     click.echo(f"予測ホライゾン: {horizon} 日")
     click.echo(f"使用ラグ: {', '.join(str(l) for l in effective_lags)}")
+    click.echo(f"特徴量セット: {feature_set}")
+    click.echo(f"使用モデル: {model_name}")
     click.echo(f"平均絶対誤差(MAE): {result['mae']:.4f}")
     click.echo(f"二乗平均平方根誤差(RMSE): {result['rmse']:.4f}")
     click.echo(f"CV平均RMSE: {result['cv_score']:.4f}")
@@ -199,6 +235,7 @@ def forecast(
                 history,
                 forecast_horizon=horizon,
                 lags=effective_lags,
+                technical_indicators=technical_indicators,
             )
         except ValueError:
             click.echo(f"{latest['Date']}: 十分な履歴がないため予測をスキップします")

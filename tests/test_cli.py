@@ -141,6 +141,63 @@ def test_cli_backtest_runs_with_ticker(monkeypatch: pytest.MonkeyPatch):
     assert result.exit_code == 0
     fetch_mock.assert_called_once_with("AAPL", period="60d", interval="1d")
     simulate_mock.assert_called_once()
+    _, kwargs = simulate_mock.call_args
+    assert kwargs["stop_loss"] is None
+    assert kwargs["trailing_stop"] is None
+    assert kwargs["volatility_adjustment"] is None
+    assert kwargs["volatility_lookback"] == 5
+
+
+def test_cli_backtest_passes_risk_control_options(monkeypatch: pytest.MonkeyPatch):
+    runner = CliRunner()
+
+    dummy_rows = _dummy_price_rows()
+
+    fetch_mock = Mock(return_value=dummy_rows)
+    monkeypatch.setattr(
+        "stock_predictor.cli.fetch_price_data_from_yfinance", fetch_mock
+    )
+
+    simulate_mock = Mock(
+        return_value={
+            "trades": 1,
+            "win_rate": 1.0,
+            "cumulative_return": 0.1,
+            "initial_capital": 1000.0,
+            "ending_balance": 1100.0,
+            "total_profit": 100.0,
+            "max_drawdown": 0.02,
+            "signals": [],
+        }
+    )
+    monkeypatch.setattr(
+        "stock_predictor.cli.simulate_trading_strategy",
+        simulate_mock,
+    )
+
+    result = runner.invoke(
+        main,
+        [
+            "backtest",
+            "--ticker",
+            "AAPL",
+            "--stop-loss",
+            "0.02",
+            "--trailing-stop",
+            "0.03",
+            "--volatility-adjustment",
+            "0.05",
+            "--volatility-lookback",
+            "7",
+        ],
+    )
+
+    assert result.exit_code == 0
+    _, kwargs = simulate_mock.call_args
+    assert kwargs["stop_loss"] == 0.02
+    assert kwargs["trailing_stop"] == 0.03
+    assert kwargs["volatility_adjustment"] == 0.05
+    assert kwargs["volatility_lookback"] == 7
 
 
 def test_cli_backtest_rejects_csv_argument(tmp_path):

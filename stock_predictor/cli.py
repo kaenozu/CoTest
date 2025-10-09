@@ -251,7 +251,7 @@ def forecast(
     default=1.0,
     show_default=True,
     type=float,
-    help="各トレードで投入する資金割合(0-1)",
+    help="各トレードで投入する資金割合(0-1)。1.0は1単位保有を想定",
 )
 @click.option(
     "--fee-rate",
@@ -271,6 +271,28 @@ def forecast(
     "--max-drawdown-limit",
     type=float,
     help="許容最大ドローダウン(比率)。超過で取引停止",
+)
+@click.option(
+    "--stop-loss",
+    type=float,
+    help="エントリー価格からの許容損失率(比率)",
+)
+@click.option(
+    "--trailing-stop",
+    type=float,
+    help="最大到達価格からの許容戻り幅(比率)",
+)
+@click.option(
+    "--volatility-adjustment",
+    type=float,
+    help="ポジションサイズを調整する目標ボラティリティ(比率)",
+)
+@click.option(
+    "--volatility-lookback",
+    default=5,
+    show_default=True,
+    type=int,
+    help="ボラティリティ調整で参照する日数",
 )
 @click.option("--ticker", type=str, help="yfinanceから取得するティッカー")
 @click.option(
@@ -300,6 +322,10 @@ def backtest(
     fee_rate: float,
     slippage: float,
     max_drawdown_limit: float | None,
+    stop_loss: float | None,
+    trailing_stop: float | None,
+    volatility_adjustment: float | None,
+    volatility_lookback: int,
     ticker: str | None,
     period: str,
     interval: str,
@@ -329,6 +355,10 @@ def backtest(
         fee_rate=fee_rate,
         slippage=slippage,
         max_drawdown_limit=max_drawdown_limit,
+        stop_loss=stop_loss,
+        trailing_stop=trailing_stop,
+        volatility_adjustment=volatility_adjustment,
+        volatility_lookback=volatility_lookback,
     )
 
     click.echo("===== バックテスト結果 =====")

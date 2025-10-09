@@ -7,7 +7,7 @@ from datetime import date, datetime, time
 from typing import Iterable, List, Sequence
 
 from .data import FeatureDataset, PriceRow, build_feature_dataset
-from .model import LinearModel, _fit_linear_regression, _time_series_splits
+from .model import LinearModel, _fit_linear_regression, _walk_forward_splits
 
 
 def _to_datetime(value: date | datetime) -> datetime:
@@ -26,7 +26,8 @@ def _generate_predictions(
     ridge_lambda: float,
 ) -> List[float | None]:
     predictions: List[float | None] = [None] * len(dataset.features)
-    for train_idx, test_idx in _time_series_splits(len(dataset.features), cv_splits):
+    splits = _walk_forward_splits(len(dataset.features), cv_splits)
+    for train_idx, test_idx in splits:
         if not train_idx or not test_idx:
             continue
         X_train = [dataset.features[i] for i in train_idx]

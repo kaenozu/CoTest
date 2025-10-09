@@ -2,6 +2,7 @@ from datetime import date, timedelta
 
 import pytest
 
+from stock_predictor.data import build_feature_dataset
 from stock_predictor.model import _fit_linear_regression, train_and_evaluate
 
 
@@ -30,10 +31,22 @@ def test_train_and_evaluate_returns_metrics():
 
     result = train_and_evaluate(prices, forecast_horizon=1, lags=(1, 2, 3), cv_splits=3)
 
-    assert set(result.keys()) == {"model", "mae", "rmse", "cv_score"}
+    assert set(result.keys()) == {
+        "model",
+        "mae",
+        "rmse",
+        "cv_score",
+        "forward_mae",
+        "forward_rmse",
+        "forward_indices",
+    }
     assert result["mae"] >= 0
     assert result["rmse"] >= 0
     assert result["cv_score"] >= 0
+    assert result["forward_mae"] >= 0
+    assert result["forward_rmse"] >= 0
+    assert isinstance(result["forward_indices"], list)
+    assert all(isinstance(idx, int) for idx in result["forward_indices"])
 
 
 def test_ridge_lambda_influences_coefficients():
@@ -79,6 +92,20 @@ def test_train_and_evaluate_ignores_excessive_lags():
     assert result["model"].feature_names
     assert "lag_10_close" not in result["model"].feature_names
     assert "lag_10_return" not in result["model"].feature_names
+
+
+def test_train_and_evaluate_walk_forward_uses_future_window():
+    prices = generate_prices(days=50)
+
+    result = train_and_evaluate(prices, forecast_horizon=1, lags=(1, 2, 3), cv_splits=3)
+
+    dataset = build_feature_dataset(prices, forecast_horizon=1, lags=(1, 2, 3))
+
+    forward_indices = result["forward_indices"]
+
+    assert forward_indices, "ウォークフォワード検証の対象サンプルが返される"
+    assert all(idx in dataset.sample_indices for idx in forward_indices)
+    assert dataset.sample_indices[-len(forward_indices) :] == forward_indices
 
 
 @pytest.fixture

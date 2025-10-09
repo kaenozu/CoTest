@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Iterable, List, Sequence
+from typing import Iterable, List, Sequence, Tuple
 
-from .data import build_feature_matrix, PriceRow
+from .data import PriceRow, build_feature_dataset
 
 
 @dataclass
@@ -81,27 +81,42 @@ def _mean_absolute_error(y_true: Sequence[float], y_pred: Sequence[float]) -> fl
 def _root_mean_squared_error(y_true: Sequence[float], y_pred: Sequence[float]) -> float:
     return math.sqrt(sum((a - b) ** 2 for a, b in zip(y_true, y_pred)) / len(y_true))
 
-def _time_series_splits(n_samples: int, n_splits: int):
-    if n_splits < 1:
-        return
+def _walk_forward_splits(n_samples: int, n_splits: int) -> List[Tuple[List[int], List[int]]]:
+    if n_splits < 1 or n_samples < 2:
+        return []
 
-    base_fold_size = n_samples // (n_splits + 1)
-    remainder = n_samples - base_fold_size * (n_splits + 1)
+    segments = n_splits + 1
+    base_size = n_samples // segments
+    remainder = n_samples % segments
 
-    for i in range(1, n_splits + 1):
-        test_start = base_fold_size * i
-        test_size = base_fold_size
-        if i == n_splits:
-            test_size += remainder
-        test_end = min(test_start + test_size, n_samples)
+    if base_size == 0:
+        splits: List[Tuple[List[int], List[int]]] = []
+        for test_start in range(1, min(n_samples, n_splits + 1)):
+            train_indices = list(range(test_start))
+            test_indices = [test_start]
+            if train_indices and test_indices:
+                splits.append((train_indices, test_indices))
+        return splits
 
-        train_indices = list(range(test_start))
-        test_indices = list(range(test_start, test_end))
-
-        if not train_indices or not test_indices:
+    boundaries: List[Tuple[int, int]] = []
+    start = 0
+    for i in range(segments):
+        size = base_size + (1 if i < remainder else 0)
+        if size <= 0:
             continue
+        end = min(start + size, n_samples)
+        boundaries.append((start, end))
+        start = end
 
-        yield train_indices, test_indices
+    splits: List[Tuple[List[int], List[int]]] = []
+    for i in range(len(boundaries) - 1):
+        train_end = boundaries[i][1]
+        test_start, test_end = boundaries[i + 1]
+        train_indices = list(range(train_end))
+        test_indices = list(range(test_start, test_end))
+        if train_indices and test_indices:
+            splits.append((train_indices, test_indices))
+    return splits
 
 def train_and_evaluate(
     prices: Sequence[PriceRow],
@@ -111,7 +126,14 @@ def train_and_evaluate(
     ridge_lambda: float = 1e-6,
 ) -> dict[str, object]:
     """履歴データでモデルを学習し、指標を返す."""
-    X, y, feature_names = build_feature_matrix(prices, forecast_horizon=forecast_horizon, lags=lags)
+    dataset = build_feature_dataset(
+        prices,
+        forecast_horizon=forecast_horizon,
+        lags=lags,
+    )
+    X = dataset.features
+    y = dataset.targets
+    feature_names = dataset.feature_names
     if len(X) == 0:
         raise ValueError("学習に利用できるサンプルがありません")
     if cv_splits < 1:
@@ -121,7 +143,13 @@ def train_and_evaluate(
 
     mae_scores: List[float] = []
     rmse_scores: List[float] = []
-    for train_idx, test_idx in _time_series_splits(len(X), cv_splits):
+    forward_mae = float("nan")
+    forward_rmse = float("nan")
+    forward_indices: List[int] = []
+
+    splits = _walk_forward_splits(len(X), cv_splits)
+
+    for split_idx, (train_idx, test_idx) in enumerate(splits):
         X_train = [X[i] for i in train_idx]
         y_train = [y[i] for i in train_idx]
         X_test = [X[i] for i in test_idx]
@@ -133,6 +161,11 @@ def train_and_evaluate(
         predictions = model.predict(X_test)
         mae_scores.append(_mean_absolute_error(y_test, predictions))
         rmse_scores.append(_root_mean_squared_error(y_test, predictions))
+
+        if split_idx == len(splits) - 1:
+            forward_mae = mae_scores[-1]
+            forward_rmse = rmse_scores[-1]
+            forward_indices = [dataset.sample_indices[i] for i in test_idx]
 
     final_coefficients = _fit_linear_regression(X, y, ridge_lambda=ridge_lambda)
     final_model = LinearModel(feature_names, final_coefficients)
@@ -147,4 +180,7 @@ def train_and_evaluate(
         "mae": mae,
         "rmse": rmse,
         "cv_score": cv_rmse,
+        "forward_mae": forward_mae if forward_mae == forward_mae else mae,
+        "forward_rmse": forward_rmse if forward_rmse == forward_rmse else rmse,
+        "forward_indices": forward_indices,
     }

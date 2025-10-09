@@ -1,3 +1,4 @@
+import warnings
 from datetime import date
 
 import pytest
@@ -132,6 +133,61 @@ def test_fetch_price_data_from_yfinance(monkeypatch):
     assert data[0]["Date"] == date(2023, 1, 1)
     assert data[0]["Close"] == 10.5
     assert data[1]["Volume"] == 1100
+
+
+def test_fetch_price_data_from_yfinance_handles_series_scalars(monkeypatch):
+    import pandas as pd
+
+    class DummyFrame:
+        def __init__(self, rows):
+            self._rows = rows
+
+        @property
+        def empty(self):
+            return len(self._rows) == 0
+
+        def dropna(self):
+            return DummyFrame(self._rows)
+
+        def iterrows(self):
+            for idx, values in self._rows:
+                yield idx, values.copy()
+
+    rows = [
+        (
+            date(2024, 1, 1),
+            pd.Series(
+                {
+                    "Open": pd.Series([10.0]),
+                    "High": pd.Series([11.0]),
+                    "Low": pd.Series([9.0]),
+                    "Close": pd.Series([10.5]),
+                    "Adj Close": pd.Series([10.4]),
+                    "Volume": pd.Series([1000.0]),
+                }
+            ),
+        )
+    ]
+
+    frame = DummyFrame(rows)
+
+    def fake_download(*args, **kwargs):
+        return frame
+
+    monkeypatch.setattr(
+        data_module,
+        "yfinance",
+        SimpleNamespace(download=fake_download),
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        data = fetch_price_data_from_yfinance("AAPL")
+
+    future_warnings = [item for item in caught if issubclass(item.category, FutureWarning)]
+    assert not future_warnings
+    assert data[0]["Close"] == pytest.approx(10.5)
+    assert data[0]["Volume"] == pytest.approx(1000.0)
 
 
 def test_fetch_price_data_from_yfinance_with_split_adjustments(monkeypatch):

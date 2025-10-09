@@ -26,6 +26,28 @@ stock-predictor forecast data/prices.csv --horizon 1 --lags 1 --lags 2 --lags 5
 stock-predictor forecast --ticker AAPL --period 60d --interval 1d --adjust manual
 ```
 
+### 複数ティッカーのポートフォリオ最適化
+
+1行1ティッカーで列挙したテキストファイルを用意すると、`backtest-portfolio` サブコマンドで組み合わせ探索が行えます。候補のティッカーすべてについてバックテストを実行し、累積リターンが最大になる組み合わせとランキングを表示します。
+
+```text
+AAPL
+MSFT
+GOOG
+AMZN
+```
+
+```bash
+stock-predictor backtest-portfolio tickers.txt \
+  --combination-size 2 \
+  --horizon 1 \
+  --threshold 0.005 \
+  --period 60d \
+  --interval 1d
+```
+
+`--lags` や `--ridge` などのバックテスト向けオプションも利用できます。結果には最適組み合わせ、各ティッカーの個別損益、ポートフォリオ全体の累積リターン/損益が含まれます。
+
 ### 共通オプション
 
 - `--horizon`: 予測ホライゾン(日数)

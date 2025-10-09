@@ -58,14 +58,16 @@ def test_simulate_trading_strategy_returns_metrics(threshold):
         trade = signals[0]
         # プルリクエスト #16 のブランチの内容
         assert trade["direction"] in {"long", "short"}
-        assert trade["quantity"] == 1
+        assert trade["quantity"] >= 1
+        per_unit_profit = trade["profit"] / trade["quantity"]
+        expected_diff = trade["exit"]["price"] - trade["entry"]["price"]
+        assert math.isclose(per_unit_profit, expected_diff, rel_tol=1e-6)
         assert "entry" in trade and "exit" in trade
         assert isinstance(trade["entry"]["timestamp"], datetime)
         assert isinstance(trade["exit"]["timestamp"], datetime)
         assert isinstance(trade["entry"]["price"], float)
         assert isinstance(trade["exit"]["price"], float)
         assert isinstance(trade["profit"], float)
-        assert math.isclose(trade["quantity"], 1)
         # メインブランチの最新の状態の内容
         assert trade["action"] in {"buy", "sell", "hold"}
         assert "predicted_return" in trade
@@ -103,16 +105,129 @@ def test_simulate_trading_strategy_provides_trade_timing(monkeypatch):
     assert first["direction"] == "long"
     assert first["entry"]["timestamp"] < first["exit"]["timestamp"]
     assert (first["exit"]["timestamp"] - first["entry"]["timestamp"]).days == 2
-    assert math.isclose(first["profit"], 2.0, rel_tol=1e-6)
+    assert math.isclose(first["profit"] / first["quantity"], 2.0, rel_tol=1e-6)
 
     second = signals[1]
     assert second["direction"] == "short"
     assert second["entry"]["timestamp"] >= first["exit"]["timestamp"]
-    assert math.isclose(second["profit"], -2.0, rel_tol=1e-6)
+    assert math.isclose(second["profit"] / second["quantity"], -2.0, rel_tol=1e-6)
 
     assert result["trades"] == 2
     assert math.isclose(result["win_rate"], 0.5, rel_tol=1e-6)
-    assert math.isclose(result["cumulative_return"], 0.0, abs_tol=1e-9)
+    assert math.isclose(result["cumulative_return"], 0.0, abs_tol=1e-3)
+
+
+def test_simulate_trading_strategy_handles_multiple_positions_and_partial_exit(monkeypatch):
+    prices = generate_prices(days=20)
+
+    def fake_predictions(dataset, *_, **__):
+        bullish_indices = set(dataset.sample_indices[2:4])
+        values = []
+        for close, idx in zip(dataset.closes, dataset.sample_indices):
+            if idx in bullish_indices:
+                values.append(close * 1.05)
+            else:
+                values.append(close)
+        return values
+
+    def take_profit(position, current_row, _row_index):
+        current_price = float(current_row["Close"])
+        if (
+            position.direction == "long"
+            and current_price >= position.entry_price * 1.01
+            and position.remaining_quantity > position.total_quantity * 0.4
+        ):
+            return {"close_fraction": 0.5, "exit_reason": "take_profit"}
+        return None
+
+    monkeypatch.setattr(backtest, "_generate_predictions", fake_predictions)
+
+    result = simulate_trading_strategy(
+        prices,
+        forecast_horizon=3,
+        lags=(1,),
+        rolling_windows=(),
+        cv_splits=3,
+        threshold=0.0,
+        max_open_positions=2,
+        allocation_method="equal-weight",
+        exit_condition=take_profit,
+    )
+
+    signals = result["signals"]
+    assert result["trades"] == len(signals) == 4
+
+    take_profit_trades = [tr for tr in signals if tr["exit_reason"] == "take_profit"]
+    assert take_profit_trades, "部分利確シグナルが存在すること"
+    take_profit_trade = min(take_profit_trades, key=lambda tr: tr["entry"]["index"])
+    assert take_profit_trade["quantity"] < take_profit_trade["entry_quantity"]
+    assert take_profit_trade["remaining_quantity"] > 0
+
+    horizon_trade = next(
+        tr
+        for tr in signals
+        if tr["exit_reason"] == "horizon"
+        and tr["entry"]["index"] == take_profit_trade["entry"]["index"]
+    )
+
+    overlapping_trade = next(
+        tr
+        for tr in signals
+        if tr["entry"]["index"] != take_profit_trade["entry"]["index"]
+        and tr["exit_reason"] == "horizon"
+    )
+
+    assert overlapping_trade["entry"]["timestamp"] < horizon_trade["exit"]["timestamp"]
+    assert take_profit_trade["direction"] == "long"
+    assert horizon_trade["direction"] == "long"
+
+
+def test_simulate_trading_strategy_supports_size_adjustment_and_directional_horizon(
+    monkeypatch,
+):
+    prices = generate_prices(days=18)
+
+    def fake_predictions(dataset, *_, **__):
+        long_index = dataset.sample_indices[2]
+        short_index = dataset.sample_indices[5]
+        values = []
+        for close, idx in zip(dataset.closes, dataset.sample_indices):
+            if idx == long_index:
+                values.append(close * 1.05)
+            elif idx == short_index:
+                values.append(close * 0.95)
+            else:
+                values.append(close)
+        return values
+
+    def adjuster(base_value, context):
+        if context["direction"] == "short":
+            return base_value * 0.5
+        return base_value
+
+    monkeypatch.setattr(backtest, "_generate_predictions", fake_predictions)
+
+    result = simulate_trading_strategy(
+        prices,
+        forecast_horizon=2,
+        lags=(1,),
+        rolling_windows=(),
+        cv_splits=3,
+        threshold=0.0,
+        max_open_positions=3,
+        exit_horizons={"long": 3, "short": 1},
+        position_size_adjuster=adjuster,
+    )
+
+    signals = result["signals"]
+    assert len(signals) == 2
+
+    long_trade = next(tr for tr in signals if tr["direction"] == "long")
+    short_trade = next(tr for tr in signals if tr["direction"] == "short")
+
+    assert long_trade["holding_period"] == 3
+    assert short_trade["holding_period"] == 1
+    assert short_trade["quantity"] < long_trade["quantity"]
 
 
 def test_backtest_limits_open_positions(monkeypatch):

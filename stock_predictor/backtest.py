@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import date, datetime, time
-from typing import Iterable, List, Sequence
+from typing import Callable, Dict, Iterable, List, Sequence
 
 from .data import FeatureDataset, PriceRow, build_feature_dataset
 from .model import LinearModel, _fit_linear_regression, _time_series_splits
@@ -45,18 +46,22 @@ class Position:
     """オープンポジションを表現するデータ構造."""
 
     direction: str
-    quantity: int
+    total_quantity: float
+    remaining_quantity: float
     entry_index: int
-    exit_index: int
+    target_exit_index: int
     entry_price: float
-    exit_price: float
     entry_timestamp: datetime
-    exit_timestamp: datetime
     predicted_return: float
+    ticker: str | None = None
 
-    @property
-    def holding_period(self) -> int:
-        return self.exit_index - self.entry_index
+    def reduce(self, quantity: float) -> None:
+        self.remaining_quantity = max(self.remaining_quantity - quantity, 0.0)
+
+
+ExitDecision = Dict[str, object]
+
+EPSILON = 1e-9
 
 
 def simulate_trading_strategy(
@@ -72,8 +77,13 @@ def simulate_trading_strategy(
     fee_rate: float = 0.0,
     slippage: float = 0.0,
     max_drawdown_limit: float | None = None,
+    max_open_positions: int = 1,
+    allocation_method: str = "fixed-fraction",
+    exit_horizons: Dict[str, int] | None = None,
+    position_size_adjuster: Callable[[float, Dict[str, object]], float] | None = None,
+    exit_condition: Callable[[Position, PriceRow, int], object | None] | None = None,
 ) -> dict[str, object]:
-    """予測値から単純な売買シグナルを生成し、損益を集計する."""
+    """予測値から売買シグナルを生成し、柔軟なポジション管理で損益を集計する."""
 
     if cv_splits < 1:
         raise ValueError("cv_splits は1以上で指定してください")
@@ -91,6 +101,20 @@ def simulate_trading_strategy(
         raise ValueError("slippage は0以上で指定してください")
     if max_drawdown_limit is not None and (max_drawdown_limit < 0 or max_drawdown_limit >= 1):
         raise ValueError("max_drawdown_limit は0以上1未満で指定してください")
+    if max_open_positions < 1:
+        raise ValueError("max_open_positions は1以上で指定してください")
+
+    normalized_allocation = allocation_method.replace("_", "-").lower()
+    if normalized_allocation not in {"fixed-fraction", "equal-weight"}:
+        raise ValueError("allocation_method には 'fixed-fraction' または 'equal-weight' を指定してください")
+
+    normalized_exit_horizons: Dict[str, int] = {}
+    if exit_horizons:
+        for key, value in exit_horizons.items():
+            horizon = int(value)
+            if horizon < 1:
+                raise ValueError("exit_horizons の値は1以上で指定してください")
+            normalized_exit_horizons[key.lower()] = horizon
 
     dataset = build_feature_dataset(
         prices,
@@ -114,42 +138,63 @@ def simulate_trading_strategy(
     max_drawdown = 0.0
     total_profit = 0.0
     open_positions: List[Position] = []
-    max_open_positions = 1
 
     halt_due_to_drawdown = False
     halted = False
     halt_reason: str | None = None
 
-    def close_position(position: Position) -> None:
-        nonlocal trades, wins, total_profit, balance, max_balance, max_drawdown, halt_due_to_drawdown, halted, halt_reason
+    def apply_slippage(price: float, direction: str, side: str) -> float:
+        if side == "entry":
+            return price * (1 + slippage) if direction == "long" else price * (1 - slippage)
+        return price * (1 - slippage) if direction == "long" else price * (1 + slippage)
 
-        entry_price = position.entry_price
-        exit_price = position.exit_price
-        quantity = position.quantity
+    def normalize_exit_decisions(raw: object | None) -> List[ExitDecision]:
+        if raw is None:
+            return []
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            return [{"close_fraction": float(raw)}]
+        if isinstance(raw, dict):
+            return [raw]
+        if isinstance(raw, (list, tuple)):
+            decisions: List[ExitDecision] = []
+            for item in raw:
+                if item is None:
+                    continue
+                if isinstance(item, (int, float)) and not isinstance(item, bool):
+                    decisions.append({"close_fraction": float(item)})
+                elif isinstance(item, dict):
+                    decisions.append(item)
+                else:
+                    raise TypeError("exit_condition は dict または数値のリストを返す必要があります")
+            return decisions
+        raise TypeError("exit_condition は dict/数値/リストのいずれかを返す必要があります")
 
-        if quantity <= 0:
+    def register_trade(
+        position: Position,
+        quantity: float,
+        exit_index: int,
+        exit_timestamp: datetime,
+        exit_price: float,
+        reason: str,
+    ) -> None:
+        nonlocal balance, total_profit, max_balance, max_drawdown, trades, wins, halt_due_to_drawdown, halted, halt_reason
+
+        quantity = min(quantity, position.remaining_quantity)
+        if quantity <= EPSILON:
             return
 
-        price_diff = exit_price - entry_price
-        if position.direction == "long":
-            profit = price_diff * quantity
+        entry_price = position.entry_price
+        direction = position.direction
+        entry_value = entry_price * quantity
+        exit_value = exit_price * quantity
+
+        if direction == "long":
+            profit = exit_value - entry_value
+            pnl = profit - fee_rate * (entry_value + exit_value)
         else:
-            profit = -price_diff * quantity
+            profit = entry_value - exit_value
+            pnl = profit - fee_rate * (entry_value + exit_value)
 
-        if entry_price != 0:
-            realized_return = profit / (entry_price * quantity)
-        else:
-            realized_return = 0.0
-
-        # 手数料とスリッページを計算
-        entry_value = quantity * entry_price
-        exit_value = quantity * exit_price
-        fees = fee_rate * (entry_value + exit_value)
-
-        # 損益を計算
-        pnl = (exit_value - entry_value) - fees if position.direction == "long" else (entry_value - exit_value) - fees
-
-        # 残高を更新
         balance += pnl
         total_profit = balance - initial_capital
         balance_history.append(balance)
@@ -164,9 +209,22 @@ def simulate_trading_strategy(
             if halt_reason is None:
                 halt_reason = "max_drawdown_limit"
 
+        if entry_value != 0:
+            realized_return = profit / entry_value
+        else:
+            realized_return = 0.0
+
+        position.reduce(quantity)
+
         trade_record = {
-            "direction": position.direction,
-            "quantity": quantity,
+            "direction": direction,
+            "action": "buy" if direction == "long" else "sell",
+            "quantity": float(quantity),
+            "entry_quantity": float(position.total_quantity),
+            "remaining_quantity": float(position.remaining_quantity),
+            "predicted_return": position.predicted_return,
+            "date": position.entry_timestamp.date(),
+            "ticker": position.ticker,
             "entry": {
                 "timestamp": position.entry_timestamp,
                 "price": float(entry_price),
@@ -174,17 +232,18 @@ def simulate_trading_strategy(
                 "predicted_return": position.predicted_return,
             },
             "exit": {
-                "timestamp": position.exit_timestamp,
+                "timestamp": exit_timestamp,
                 "price": float(exit_price),
-                "index": position.exit_index,
+                "index": exit_index,
                 "actual_return": realized_return,
             },
-            "holding_period": position.holding_period,
+            "holding_period": max(exit_index - position.entry_index, 0),
             "profit": float(profit),
             "return": realized_return,
-            "pnl": pnl,
-            "fees": fees,
+            "pnl": float(pnl),
+            "fees": fee_rate * (entry_value + exit_value),
             "balance_after_trade": balance,
+            "exit_reason": reason,
         }
 
         signals.append(trade_record)
@@ -192,34 +251,84 @@ def simulate_trading_strategy(
         if profit > 0:
             wins += 1
 
+    def close_all_positions(
+        exit_index: int, timestamp: datetime, market_price: float, reason: str
+    ) -> None:
+        nonlocal open_positions
+        remaining = open_positions
+        open_positions = []
+        for position in remaining:
+            exit_price = apply_slippage(market_price, position.direction, "exit")
+            register_trade(position, position.remaining_quantity, exit_index, timestamp, exit_price, reason)
+
     for idx, predicted_close in enumerate(predictions):
         if idx >= len(dataset.sample_indices):
             break
+
         row_index = dataset.sample_indices[idx]
         current_row = sorted_rows[row_index]
         current_timestamp = _to_datetime(current_row["Date"])
-        current_close_forced = float(current_row["Close"])
+        current_close_price = float(current_row["Close"])
+        ticker = current_row.get("Ticker") if isinstance(current_row, dict) else None
 
-        # まず決済期限に達したポジションをクローズ
+        # 期限到達による決済
         remaining_positions: List[Position] = []
         matured_positions: List[Position] = []
         for position in open_positions:
-            if row_index >= position.exit_index:
+            if row_index >= position.target_exit_index:
                 matured_positions.append(position)
             else:
                 remaining_positions.append(position)
         open_positions = remaining_positions
+
         for position in matured_positions:
-            close_position(position)
+            exit_index = min(position.target_exit_index, len(sorted_rows) - 1)
+            exit_row = sorted_rows[exit_index]
+            exit_timestamp = _to_datetime(exit_row["Date"])
+            exit_price = apply_slippage(float(exit_row["Close"]), position.direction, "exit")
+            register_trade(position, position.remaining_quantity, exit_index, exit_timestamp, exit_price, "horizon")
 
         if halt_due_to_drawdown:
-            positions_to_force_close = open_positions
-            open_positions = []
-            for position in positions_to_force_close:
-                position.exit_index = row_index
-                position.exit_timestamp = current_timestamp
-                position.exit_price = current_close_forced
-                close_position(position)
+            close_all_positions(row_index, current_timestamp, current_close_price, halt_reason or "max_drawdown_limit")
+            break
+
+        # カスタムエグジット条件の評価
+        if exit_condition:
+            updated_positions: List[Position] = []
+            for position in open_positions:
+                decisions = normalize_exit_decisions(exit_condition(position, current_row, row_index))
+                for decision in decisions:
+                    new_exit_index = decision.get("new_exit_index")
+                    if isinstance(new_exit_index, (int, float)):
+                        new_index = int(new_exit_index)
+                        if new_index <= row_index:
+                            new_index = row_index + 1
+                        position.target_exit_index = min(new_index, len(sorted_rows) - 1)
+
+                    fraction = decision.get("close_fraction") or decision.get("fraction")
+                    quantity_override = decision.get("close_quantity") or decision.get("quantity")
+                    close_quantity: float | None = None
+                    if isinstance(quantity_override, (int, float)) and not isinstance(quantity_override, bool):
+                        close_quantity = float(quantity_override)
+                    elif isinstance(fraction, (int, float)) and not isinstance(fraction, bool):
+                        close_quantity = position.remaining_quantity * float(fraction)
+
+                    if close_quantity and close_quantity > EPSILON:
+                        raw_exit_price = decision.get("exit_price")
+                        if isinstance(raw_exit_price, (int, float)):
+                            exit_price = float(raw_exit_price)
+                        else:
+                            exit_price = apply_slippage(current_close_price, position.direction, "exit")
+                        reason = str(decision.get("exit_reason", "custom"))
+                        register_trade(position, close_quantity, row_index, current_timestamp, exit_price, reason)
+                        if position.remaining_quantity <= EPSILON:
+                            break
+                if position.remaining_quantity > EPSILON:
+                    updated_positions.append(position)
+            open_positions = updated_positions
+
+        if halt_due_to_drawdown:
+            close_all_positions(row_index, current_timestamp, current_close_price, halt_reason or "max_drawdown_limit")
             break
 
         if predicted_close is None:
@@ -244,52 +353,81 @@ def simulate_trading_strategy(
         if len(open_positions) >= max_open_positions:
             continue
 
-        exit_index = row_index + forecast_horizon
-        if exit_index >= len(sorted_rows):
+        horizon = normalized_exit_horizons.get(direction, forecast_horizon)
+        if horizon < 1:
             continue
 
-        entry_row = current_row
-        exit_row = sorted_rows[exit_index]
-        entry_date_value = entry_row["Date"]
-        exit_date_value = exit_row["Date"]
-        entry_timestamp = current_timestamp
-        exit_timestamp = _to_datetime(exit_date_value)
-        exit_price = float(exit_row["Close"])
+        target_exit_index = row_index + horizon
+        if target_exit_index >= len(sorted_rows):
+            continue
 
-        # トレード価格を計算 (スリッページ)
-        if direction == "long":
-            entry_price_with_slippage = current_close * (1 + slippage)
-            exit_price_with_slippage = exit_price * (1 - slippage)
+        entry_price = apply_slippage(current_close_price, direction, "entry")
+
+        if normalized_allocation == "fixed-fraction":
+            trade_value = balance * position_fraction
         else:
-            entry_price_with_slippage = current_close * (1 - slippage)
-            exit_price_with_slippage = exit_price * (1 + slippage)
+            remaining_slots = max(max_open_positions - len(open_positions), 1)
+            equal_allocation = balance / remaining_slots if remaining_slots else balance
+            trade_value = min(equal_allocation, balance * position_fraction)
 
-        # トレード数量を計算
-        trade_value = balance * position_fraction
-        quantity = int(trade_value / entry_price_with_slippage) if entry_price_with_slippage > 0 else 0
-        if quantity <= 0:
+        trade_value = min(trade_value, balance)
+        if trade_value <= EPSILON or entry_price <= 0:
+            continue
+        if trade_value < entry_price:
+            continue
+
+        if position_size_adjuster is not None:
+            context = {
+                "direction": direction,
+                "predicted_return": predicted_return,
+                "balance": balance,
+                "row": current_row,
+                "index": row_index,
+                "open_positions": len(open_positions),
+                "max_open_positions": max_open_positions,
+                "ticker": ticker,
+            }
+            adjusted_value = position_size_adjuster(trade_value, context)
+            if not isinstance(adjusted_value, (int, float)) or isinstance(adjusted_value, bool):
+                raise TypeError("position_size_adjuster は数値を返す必要があります")
+            if not math.isfinite(adjusted_value) or adjusted_value <= 0:
+                continue
+            trade_value = float(adjusted_value)
+            trade_value = min(trade_value, balance)
+            if trade_value <= EPSILON:
+                continue
+            if trade_value < entry_price:
+                continue
+
+        quantity = trade_value / entry_price
+        if quantity <= EPSILON:
             continue
 
         position = Position(
             direction=direction,
-            quantity=quantity,
+            total_quantity=float(quantity),
+            remaining_quantity=float(quantity),
             entry_index=row_index,
-            exit_index=exit_index,
-            entry_price=float(entry_price_with_slippage),
-            exit_price=float(exit_price_with_slippage),
-            entry_timestamp=entry_timestamp,
-            exit_timestamp=exit_timestamp,
+            target_exit_index=target_exit_index,
+            entry_price=float(entry_price),
+            entry_timestamp=current_timestamp,
             predicted_return=float(predicted_return),
+            ticker=ticker if isinstance(ticker, str) else None,
         )
         open_positions.append(position)
 
-    # ループ終了後に未決済ポジションがあればまとめてクローズ
-    for position in open_positions:
-        close_position(position)
+    if not halt_due_to_drawdown:
+        for position in open_positions:
+            exit_index = min(position.target_exit_index, len(sorted_rows) - 1)
+            exit_row = sorted_rows[exit_index]
+            exit_timestamp = _to_datetime(exit_row["Date"])
+            exit_price = apply_slippage(float(exit_row["Close"]), position.direction, "exit")
+            reason = "horizon" if exit_index == position.target_exit_index else "end_of_data"
+            register_trade(position, position.remaining_quantity, exit_index, exit_timestamp, exit_price, reason)
 
     win_rate = wins / trades if trades else 0.0
     ending_balance = balance
-    cumulative_return = total_profit / initial_capital
+    cumulative_return = total_profit / initial_capital if initial_capital else 0.0
 
     return {
         "signals": signals,

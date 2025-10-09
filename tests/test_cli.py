@@ -1,7 +1,6 @@
 from datetime import date
 
 from click.testing import CliRunner
-
 from unittest.mock import Mock
 
 import pytest
@@ -135,12 +134,24 @@ def test_cli_backtest_runs_with_ticker(monkeypatch: pytest.MonkeyPatch):
             "0.001",
             "--lags",
             "1",
+            "--max-open-positions",
+            "3",
+            "--allocation-method",
+            "equal-weight",
+            "--long-horizon",
+            "4",
+            "--short-horizon",
+            "1",
         ],
     )
 
     assert result.exit_code == 0
     fetch_mock.assert_called_once_with("AAPL", period="60d", interval="1d")
     simulate_mock.assert_called_once()
+    _, kwargs = simulate_mock.call_args
+    assert kwargs["max_open_positions"] == 3
+    assert kwargs["allocation_method"] == "equal-weight"
+    assert kwargs["exit_horizons"] == {"long": 4, "short": 1}
 
 
 def test_cli_backtest_rejects_csv_argument(tmp_path):
@@ -290,6 +301,7 @@ def test_cli_backtest_passes_cv_splits(monkeypatch: pytest.MonkeyPatch):
     assert kwargs["cv_splits"] == 4
     assert kwargs["initial_capital"] == 1_000_000.0
     assert kwargs["position_fraction"] == 1.0
+    assert kwargs["allocation_method"] == "fixed-fraction"
     assert kwargs["fee_rate"] == 0.0
     assert kwargs["slippage"] == 0.0
     assert kwargs["max_drawdown_limit"] is None

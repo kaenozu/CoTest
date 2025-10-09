@@ -1,7 +1,5 @@
 from datetime import date
 
-from datetime import date
-
 from click.testing import CliRunner
 
 import pytest
@@ -31,7 +29,9 @@ def _make_price_rows(value: float) -> list[PriceRow]:
     ]
 
 
-def test_optimize_ticker_combinations_selects_highest_cumulative_return(monkeypatch: pytest.MonkeyPatch):
+def test_optimize_ticker_combinations_selects_highest_cumulative_return(
+    monkeypatch: pytest.MonkeyPatch,
+):
     price_map = {
         "AAA": _make_price_rows(100.0),
         "BBB": _make_price_rows(120.0),
@@ -169,6 +169,7 @@ def test_cli_backtest_portfolio_reads_file_and_outputs_optimal_combo(
         main,
         [
             "backtest-portfolio",
+            "--tickers-file",
             str(tickers_file),
             "--combination-size",
             "2",
@@ -196,3 +197,75 @@ def test_cli_backtest_portfolio_reads_file_and_outputs_optimal_combo(
     assert backtest_kwargs["lags"] == (1, 2)
     assert backtest_kwargs["cv_splits"] == 5
     assert backtest_kwargs["ridge_lambda"] == pytest.approx(1e-6)
+
+
+def test_cli_backtest_portfolio_uses_recommended_universe(monkeypatch: pytest.MonkeyPatch):
+    recommended = ["AAPL", "MSFT", "GOOGL", "AMZN"]
+
+    def fake_get_recommended(universe: str, *, limit: int | None = None):
+        if limit is None:
+            return recommended
+        return recommended[:limit]
+
+    monkeypatch.setattr(
+        "stock_predictor.cli.get_recommended_tickers", fake_get_recommended
+    )
+
+    fetched: list[str] = []
+
+    def fake_fetch(ticker, *, period, interval):
+        fetched.append(ticker)
+        return _make_price_rows(100.0)
+
+    monkeypatch.setattr("stock_predictor.cli.fetch_price_data_from_yfinance", fake_fetch)
+
+    captured: dict[str, object] = {}
+
+    def fake_optimize(price_map, combination_size, backtest_kwargs=None):
+        captured["price_map"] = price_map
+        captured["combination_size"] = combination_size
+        return {"best_combination": tuple(recommended[:2]), "best_metrics": {}, "ranking": [], "per_ticker_results": {}}
+
+    monkeypatch.setattr(
+        "stock_predictor.cli.optimize_ticker_combinations", fake_optimize
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "backtest-portfolio",
+            "--universe",
+            "default",
+            "--limit",
+            "3",
+            "--combination-size",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["combination_size"] == 2
+    assert sorted(captured["price_map"].keys()) == sorted(recommended[:3])
+    assert fetched == recommended[:3]
+    assert "候補ティッカー: AAPL, MSFT, GOOGL" in result.output
+
+
+def test_cli_backtest_portfolio_validates_combination_size(monkeypatch: pytest.MonkeyPatch):
+    recommended = ["AAPL", "MSFT"]
+    monkeypatch.setattr(
+        "stock_predictor.cli.get_recommended_tickers", lambda *args, **kwargs: recommended
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "backtest-portfolio",
+            "--combination-size",
+            "3",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--combination-size がティッカー数を超えています" in result.output

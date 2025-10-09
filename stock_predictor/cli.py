@@ -17,6 +17,7 @@ from .data import (
 )
 from .portfolio import optimize_ticker_combinations
 from .model import train_and_evaluate
+from .universe import DEFAULT_UNIVERSE, get_recommended_tickers
 
 
 @click.group()
@@ -88,6 +89,20 @@ def _resolve_live_client(identifier: str):
 )
 @click.option("--ticker", type=str, help="yfinanceから取得するティッカー")
 @click.option(
+    "--universe",
+    type=str,
+    default=DEFAULT_UNIVERSE,
+    show_default=True,
+    help="推奨ユニバース名",
+)
+@click.option(
+    "--auto-index",
+    type=int,
+    default=0,
+    show_default=True,
+    help="推奨ティッカーリストから利用するインデックス(0始まり)",
+)
+@click.option(
     "--period",
     type=str,
     default="60d",
@@ -133,6 +148,8 @@ def forecast(
     ridge: float,
     cv_splits: int,
     ticker: str | None,
+    universe: str,
+    auto_index: int,
     period: str,
     interval: str,
     adjust: str,
@@ -146,10 +163,24 @@ def forecast(
         raise click.BadParameter("--live-limit には0以上を指定してください")
 
     if ctx.args:
-        raise click.UsageError("CSVファイルの直接指定はサポートされません。--ticker を指定してください")
+        raise click.UsageError("CSVファイルの直接指定はサポートされません")
+
+    if auto_index < 0:
+        raise click.BadParameter("--auto-index は0以上で指定してください")
 
     if ticker is None:
-        raise click.UsageError("--ticker を指定してください")
+        try:
+            recommended = get_recommended_tickers(universe, limit=auto_index + 1)
+        except ValueError as exc:
+            raise click.BadParameter(str(exc), param_hint="--universe") from exc
+
+        if len(recommended) <= auto_index:
+            raise click.BadParameter(
+                "指定された --auto-index に対応するティッカーが見つかりません",
+                param_hint="--auto-index",
+            )
+        ticker = recommended[auto_index]
+        click.echo(f"自動選択ティッカー: {ticker}")
 
     data = fetch_price_data_from_yfinance(
         ticker,
@@ -274,6 +305,20 @@ def forecast(
 )
 @click.option("--ticker", type=str, help="yfinanceから取得するティッカー")
 @click.option(
+    "--universe",
+    type=str,
+    default=DEFAULT_UNIVERSE,
+    show_default=True,
+    help="推奨ユニバース名",
+)
+@click.option(
+    "--auto-index",
+    type=int,
+    default=0,
+    show_default=True,
+    help="推奨ティッカーリストから利用するインデックス(0始まり)",
+)
+@click.option(
     "--period",
     type=str,
     default="60d",
@@ -301,16 +346,32 @@ def backtest(
     slippage: float,
     max_drawdown_limit: float | None,
     ticker: str | None,
+    universe: str,
+    auto_index: int,
     period: str,
     interval: str,
 ) -> None:
     """予測値を用いたシンプルトレード戦略をバックテストする."""
 
     if ctx.args:
-        raise click.UsageError("CSVファイルの直接指定はサポートされません。--ticker を指定してください")
+        raise click.UsageError("CSVファイルの直接指定はサポートされません")
+
+    if auto_index < 0:
+        raise click.BadParameter("--auto-index は0以上で指定してください")
 
     if ticker is None:
-        raise click.UsageError("--ticker を指定してください")
+        try:
+            recommended = get_recommended_tickers(universe, limit=auto_index + 1)
+        except ValueError as exc:
+            raise click.BadParameter(str(exc), param_hint="--universe") from exc
+
+        if len(recommended) <= auto_index:
+            raise click.BadParameter(
+                "指定された --auto-index に対応するティッカーが見つかりません",
+                param_hint="--auto-index",
+            )
+        ticker = recommended[auto_index]
+        click.echo(f"自動選択ティッカー: {ticker}")
 
     data = fetch_price_data_from_yfinance(ticker, period=period, interval=interval)
     source_label = f"{ticker} ({period}, {interval})"
@@ -362,9 +423,22 @@ def backtest(
 
 
 @main.command("backtest-portfolio")
-@click.argument(
-    "tickers_file",
+@click.option(
+    "--tickers-file",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="ティッカーを列挙したファイルパス",
+)
+@click.option(
+    "--universe",
+    type=str,
+    default=DEFAULT_UNIVERSE,
+    show_default=True,
+    help="推奨ユニバース名",
+)
+@click.option(
+    "--limit",
+    type=int,
+    help="推奨ティッカーから取得する件数",
 )
 @click.option("--combination-size", default=2, show_default=True, type=int, help="同時に評価するティッカー数")
 @click.option("--horizon", default=1, show_default=True, type=int, help="予測する営業日数")
@@ -443,7 +517,9 @@ def backtest(
     help="yfinanceから取得する足種",
 )
 def backtest_portfolio(
-    tickers_file: Path,
+    tickers_file: Path | None,
+    universe: str,
+    limit: int | None,
     combination_size: int,
     horizon: int,
     lags: Tuple[int, ...],
@@ -463,15 +539,25 @@ def backtest_portfolio(
     if combination_size < 1:
         raise click.BadParameter("--combination-size は1以上で指定してください")
 
-    raw_text = tickers_file.read_text(encoding="utf-8")
-    tickers = [
-        line.strip()
-        for line in raw_text.splitlines()
-        if line.strip() and not line.strip().startswith("#")
-    ]
+    if limit is not None and limit < 1:
+        raise click.BadParameter("--limit は1以上で指定してください")
 
-    if not tickers:
-        raise click.ClickException("ティッカーリストファイルに有効なティッカーがありません")
+    if tickers_file is not None:
+        raw_text = tickers_file.read_text(encoding="utf-8")
+        tickers = [
+            line.strip()
+            for line in raw_text.splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+
+        if not tickers:
+            raise click.ClickException("ティッカーリストファイルに有効なティッカーがありません")
+    else:
+        try:
+            tickers = get_recommended_tickers(universe, limit=limit)
+        except ValueError as exc:
+            raise click.BadParameter(str(exc), param_hint="--universe") from exc
+
     if combination_size > len(tickers):
         raise click.BadParameter(
             "--combination-size がティッカー数を超えています", param_hint="--combination-size"

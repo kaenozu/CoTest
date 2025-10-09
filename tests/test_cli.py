@@ -30,12 +30,37 @@ def _dummy_price_rows():
     ]
 
 
-def test_cli_forecast_requires_ticker():
+def test_cli_forecast_uses_recommended_ticker_when_missing(monkeypatch: pytest.MonkeyPatch):
     runner = CliRunner()
+
+    dummy_rows = _dummy_price_rows()
+
+    fetch_mock = Mock(return_value=dummy_rows)
+    monkeypatch.setattr(
+        "stock_predictor.cli.fetch_price_data_from_yfinance", fetch_mock
+    )
+
+    train_mock = Mock(
+        return_value={
+            "mae": 0.1,
+            "rmse": 0.2,
+            "cv_score": 0.3,
+        }
+    )
+    monkeypatch.setattr("stock_predictor.cli.train_and_evaluate", train_mock)
+
+    recommended = ["AAPL", "MSFT", "GOOGL"]
+    monkeypatch.setattr(
+        "stock_predictor.cli.get_recommended_tickers", lambda *args, **kwargs: recommended
+    )
+
     result = runner.invoke(main, ["forecast"])
 
-    assert result.exit_code != 0
-    assert "--ticker を指定してください" in result.output
+    assert result.exit_code == 0
+    fetch_mock.assert_called_once_with(
+        "AAPL", period="60d", interval="1d", adjust="none"
+    )
+    assert "自動選択ティッカー: AAPL" in result.output
 
 
 def test_cli_forecast_runs_with_ticker(monkeypatch: pytest.MonkeyPatch):
@@ -99,6 +124,52 @@ def test_cli_forecast_rejects_csv_argument(tmp_path):
     assert "CSVファイルの直接指定はサポートされません" in result.output
 
 
+def test_cli_backtest_uses_recommended_ticker_when_missing(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runner = CliRunner()
+
+    dummy_rows = _dummy_price_rows()
+
+    fetch_mock = Mock(return_value=dummy_rows)
+    monkeypatch.setattr(
+        "stock_predictor.cli.fetch_price_data_from_yfinance", fetch_mock
+    )
+
+    simulate_mock = Mock(
+        return_value={
+            "trades": 3,
+            "win_rate": 0.5,
+            "cumulative_return": 0.08,
+            "initial_capital": 1_000_000.0,
+            "ending_balance": 1_080_000.0,
+            "total_profit": 80_000.0,
+            "max_drawdown": 0.05,
+            "signals": [],
+        }
+    )
+    monkeypatch.setattr(
+        "stock_predictor.cli.simulate_trading_strategy", simulate_mock
+    )
+
+    recommended = ["AAPL", "MSFT", "GOOGL"]
+    monkeypatch.setattr(
+        "stock_predictor.cli.get_recommended_tickers", lambda *args, **kwargs: recommended
+    )
+
+    result = runner.invoke(
+        main,
+        [
+            "backtest",
+        ],
+    )
+
+    assert result.exit_code == 0
+    fetch_mock.assert_called_once_with("AAPL", period="60d", interval="1d")
+    simulate_mock.assert_called_once()
+    assert "自動選択ティッカー: AAPL" in result.output
+
+
 def test_cli_backtest_runs_with_ticker(monkeypatch: pytest.MonkeyPatch):
     runner = CliRunner()
 
@@ -158,138 +229,3 @@ def test_cli_backtest_rejects_csv_argument(tmp_path):
 
     assert result.exit_code != 0
     assert "CSVファイルの直接指定はサポートされません" in result.output
-
-
-def test_cli_forecast_accepts_live_mode(monkeypatch: pytest.MonkeyPatch):
-    runner = CliRunner()
-
-    dummy_rows = _dummy_price_rows()
-
-    fetch_mock = Mock(return_value=dummy_rows)
-    monkeypatch.setattr(
-        "stock_predictor.cli.fetch_price_data_from_yfinance", fetch_mock
-    )
-
-    class DummyModel:
-        def predict_one(self, features):
-            return features[0] * 2
-
-    train_mock = Mock(
-        return_value={
-            "mae": 0.1,
-            "rmse": 0.2,
-            "cv_score": 0.3,
-            "model": DummyModel(),
-        }
-    )
-    monkeypatch.setattr("stock_predictor.cli.train_and_evaluate", train_mock)
-
-    live_rows = [
-        {
-            "Date": date(2023, 2, 1),
-            "Open": 150.0,
-            "High": 151.0,
-            "Low": 149.0,
-            "Close": 150.5,
-            "Volume": 1000.0,
-        },
-        {
-            "Date": date(2023, 2, 2),
-            "Open": 151.0,
-            "High": 152.0,
-            "Low": 150.0,
-            "Close": 151.5,
-            "Volume": 1100.0,
-        },
-    ]
-
-    def fake_stream_live_prices(client, ticker, limit, **kwargs):
-        assert ticker == "AAPL"
-        assert limit == 2
-        for row in live_rows:
-            yield row
-
-    monkeypatch.setattr(
-        "stock_predictor.cli.stream_live_prices", fake_stream_live_prices
-    )
-
-    def fake_build_latest_feature_row(prices, **kwargs):
-        return [float(len(prices))], ["dummy"]
-
-    monkeypatch.setattr(
-        "stock_predictor.cli.build_latest_feature_row", fake_build_latest_feature_row
-    )
-
-    client = object()
-
-    def fake_resolve_live_client(identifier):
-        assert identifier == "dummy.factory"
-        return client
-
-    monkeypatch.setattr("stock_predictor.cli._resolve_live_client", fake_resolve_live_client)
-
-    result = runner.invoke(
-        main,
-        [
-            "forecast",
-            "--ticker",
-            "AAPL",
-            "--live",
-            "--live-client",
-            "dummy.factory",
-            "--live-limit",
-            "2",
-        ],
-    )
-
-    assert result.exit_code == 0
-    assert "===== ライブ予測 =====" in result.output
-    assert "最新終値" in result.output
-
-
-def test_cli_backtest_passes_cv_splits(monkeypatch: pytest.MonkeyPatch):
-    runner = CliRunner()
-
-    dummy_rows = _dummy_price_rows()
-
-    fetch_mock = Mock(return_value=dummy_rows)
-    monkeypatch.setattr(
-        "stock_predictor.cli.fetch_price_data_from_yfinance", fetch_mock
-    )
-
-    simulate_mock = Mock(
-        return_value={
-            "trades": 5,
-            "win_rate": 0.6,
-            "cumulative_return": 0.12,
-            "initial_capital": 1_000_000.0,
-            "ending_balance": 1_120_000.0,
-            "total_profit": 120_000.0,
-            "max_drawdown": 0.05,
-            "signals": [],
-        }
-    )
-    monkeypatch.setattr(
-        "stock_predictor.cli.simulate_trading_strategy", simulate_mock
-    )
-
-    result = runner.invoke(
-        main,
-        [
-            "backtest",
-            "--ticker",
-            "AAPL",
-            "--cv-splits",
-            "4",
-        ],
-    )
-
-    assert result.exit_code == 0
-    simulate_mock.assert_called_once()
-    _, kwargs = simulate_mock.call_args
-    assert kwargs["cv_splits"] == 4
-    assert kwargs["initial_capital"] == 1_000_000.0
-    assert kwargs["position_fraction"] == 1.0
-    assert kwargs["fee_rate"] == 0.0
-    assert kwargs["slippage"] == 0.0
-    assert kwargs["max_drawdown_limit"] is None

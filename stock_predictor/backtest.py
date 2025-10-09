@@ -158,7 +158,7 @@ def simulate_trading_strategy(
         drawdown = (max_balance - balance) / max_balance if max_balance else 0.0
         if drawdown > max_drawdown:
             max_drawdown = drawdown
-        if max_drawdown_limit is not None and max_drawdown > max_drawdown_limit:
+        if max_drawdown_limit is not None and drawdown > max_drawdown_limit:
             halt_due_to_drawdown = True
             halted = True
             if halt_reason is None:

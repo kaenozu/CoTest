@@ -12,7 +12,6 @@ from .backtest import simulate_trading_strategy
 from .data import (
     build_latest_feature_row,
     fetch_price_data_from_yfinance,
-    load_price_data,
     PriceRow,
     stream_live_prices,
 )
@@ -65,12 +64,7 @@ def _resolve_live_client(identifier: str):
     return client
 
 
-@main.command()
-@click.argument(
-    "csv_path",
-    required=False,
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-)
+@main.command(context_settings={"allow_extra_args": True})
 @click.option("--horizon", default=1, show_default=True, type=int, help="予測する営業日数")
 @click.option(
     "--lags",
@@ -131,8 +125,9 @@ def _resolve_live_client(identifier: str):
     show_default=True,
     help="ライブデータを受信する件数(0で無制限)",
 )
+@click.pass_context
 def forecast(
-    csv_path: Path | None,
+    ctx: click.Context,
     horizon: int,
     lags: Tuple[int, ...],
     ridge: float,
@@ -150,26 +145,19 @@ def forecast(
     if live_limit < 0:
         raise click.BadParameter("--live-limit には0以上を指定してください")
 
-    if csv_path is None and ticker is None:
-        raise click.UsageError("CSVパスまたは--tickerのいずれかを指定してください")
-    if csv_path is not None and ticker is not None and not live:
-        raise click.UsageError("ライブ利用時以外はCSVと--tickerを同時指定できません")
+    if ctx.args:
+        raise click.UsageError("CSVファイルの直接指定はサポートされません。--ticker を指定してください")
 
-    if csv_path is not None:
-        if period != "60d" or interval != "1d":
-            raise click.UsageError("CSV入力時は--period/--intervalを指定できません")
-        if adjust != "none":
-            raise click.UsageError("CSV入力時は--adjustを指定できません")
-        data = load_price_data(csv_path)
-        source_label = str(csv_path)
-    else:
-        data = fetch_price_data_from_yfinance(
-            ticker,
-            period=period,
-            interval=interval,
-            adjust=adjust,
-        )
-        source_label = f"{ticker} ({period}, {interval})"
+    if ticker is None:
+        raise click.UsageError("--ticker を指定してください")
+
+    data = fetch_price_data_from_yfinance(
+        ticker,
+        period=period,
+        interval=interval,
+        adjust=adjust,
+    )
+    source_label = f"{ticker} ({period}, {interval})"
 
     effective_lags = lags or (1, 2, 3, 5, 10)
 
@@ -192,8 +180,6 @@ def forecast(
     if not live and live_client is None:
         return
 
-    if ticker is None:
-        raise click.UsageError("ライブ予測には--tickerを指定してください")
     if live_client is None:
         raise click.UsageError("ライブ予測には--live-clientを指定してください")
 
@@ -224,12 +210,7 @@ def forecast(
         )
 
 
-@main.command()
-@click.argument(
-    "csv_path",
-    required=False,
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-)
+@main.command(context_settings={"allow_extra_args": True})
 @click.option("--horizon", default=1, show_default=True, type=int, help="予測する営業日数")
 @click.option(
     "--lags",
@@ -306,8 +287,9 @@ def forecast(
     show_default=True,
     help="yfinanceから取得する足種",
 )
+@click.pass_context
 def backtest(
-    csv_path: Path | None,
+    ctx: click.Context,
     horizon: int,
     lags: Tuple[int, ...],
     ridge: float,
@@ -324,17 +306,14 @@ def backtest(
 ) -> None:
     """予測値を用いたシンプルトレード戦略をバックテストする."""
 
-    if (csv_path is None) == (ticker is None):
-        raise click.UsageError("CSVパスまたは--tickerのいずれか一方を指定してください")
+    if ctx.args:
+        raise click.UsageError("CSVファイルの直接指定はサポートされません。--ticker を指定してください")
 
-    if csv_path is not None:
-        if period != "60d" or interval != "1d":
-            raise click.UsageError("CSV入力時は--period/--intervalを指定できません")
-        data = load_price_data(csv_path)
-        source_label = str(csv_path)
-    else:
-        data = fetch_price_data_from_yfinance(ticker, period=period, interval=interval)
-        source_label = f"{ticker} ({period}, {interval})"
+    if ticker is None:
+        raise click.UsageError("--ticker を指定してください")
+
+    data = fetch_price_data_from_yfinance(ticker, period=period, interval=interval)
+    source_label = f"{ticker} ({period}, {interval})"
 
     effective_lags = lags or (1, 2, 3, 5, 10)
 

@@ -46,7 +46,7 @@ class Position:
     """オープンポジションを表現するデータ構造."""
 
     direction: str
-    quantity: int
+    quantity: float
     entry_index: int
     exit_index: int
     entry_price: float
@@ -54,6 +54,11 @@ class Position:
     entry_timestamp: datetime
     exit_timestamp: datetime
     predicted_return: float
+    exit_reason: str = "target"
+    stop_loss: float | None = None
+    trailing_stop: float | None = None
+    highest_price: float | None = None
+    lowest_price: float | None = None
 
     @property
     def holding_period(self) -> int:
@@ -73,6 +78,10 @@ def simulate_trading_strategy(
     fee_rate: float = 0.0,
     slippage: float = 0.0,
     max_drawdown_limit: float | None = None,
+    stop_loss: float | None = None,
+    trailing_stop: float | None = None,
+    volatility_adjustment: float | None = None,
+    volatility_lookback: int = 5,
 ) -> dict[str, object]:
     """予測値から単純な売買シグナルを生成し、損益を集計する."""
 
@@ -92,6 +101,14 @@ def simulate_trading_strategy(
         raise ValueError("slippage は0以上で指定してください")
     if max_drawdown_limit is not None and (max_drawdown_limit < 0 or max_drawdown_limit >= 1):
         raise ValueError("max_drawdown_limit は0以上1未満で指定してください")
+    if stop_loss is not None and stop_loss <= 0:
+        raise ValueError("stop_loss は正の値で指定してください")
+    if trailing_stop is not None and trailing_stop <= 0:
+        raise ValueError("trailing_stop は正の値で指定してください")
+    if volatility_adjustment is not None and volatility_adjustment <= 0:
+        raise ValueError("volatility_adjustment は正の値で指定してください")
+    if volatility_adjustment is not None and volatility_lookback < 2:
+        raise ValueError("volatility_lookback は2以上で指定してください")
 
     dataset = build_feature_dataset(
         prices,
@@ -105,6 +122,37 @@ def simulate_trading_strategy(
 
     predictions = _generate_predictions(dataset, cv_splits=cv_splits, ridge_lambda=ridge_lambda)
     sorted_rows = sorted(prices, key=lambda r: r["Date"])  # type: ignore[index]
+
+    closes = [float(row["Close"]) for row in sorted_rows]
+    returns: List[float | None] = [None] * len(closes)
+    for i in range(1, len(closes)):
+        prev_close = closes[i - 1]
+        if prev_close == 0:
+            continue
+        returns[i] = (closes[i] / prev_close) - 1
+
+    rolling_volatility: List[float | None] = [None] * len(closes)
+    if volatility_adjustment is not None:
+        for i in range(1, len(closes)):
+            start = max(1, i - volatility_lookback + 1)
+            window = [r for r in returns[start : i + 1] if r is not None]
+            if len(window) < 2:
+                continue
+            mean_return = sum(window) / len(window)
+            variance = sum((r - mean_return) ** 2 for r in window) / (len(window) - 1)
+            rolling_volatility[i] = variance**0.5
+
+    sample_pred_map = {
+        row_index: predictions[idx]
+        for idx, row_index in enumerate(dataset.sample_indices)
+    }
+    sample_close_map = {
+        row_index: float(dataset.closes[idx])
+        for idx, row_index in enumerate(dataset.sample_indices)
+    }
+    if not sample_close_map:
+        raise ValueError("バックテストに利用できるサンプルがありません")
+    iteration_start = min(sample_close_map.keys())
 
     signals: List[dict[str, object]] = []
     trades = 0
@@ -165,9 +213,20 @@ def simulate_trading_strategy(
             if halt_reason is None:
                 halt_reason = "max_drawdown_limit"
 
+        if max_drawdown_limit is not None and entry_value > 0:
+            loss_amount = max(0.0, -pnl)
+            trade_loss_ratio = loss_amount / entry_value
+            if trade_loss_ratio > max_drawdown_limit:
+                halt_due_to_drawdown = True
+                halted = True
+                if halt_reason is None:
+                    halt_reason = "max_drawdown_limit"
+
         trade_record = {
             "direction": position.direction,
-            "quantity": quantity,
+            "action": "buy" if position.direction == "long" else "sell",
+            "quantity": float(quantity),
+            "date": position.entry_timestamp.date(),
             "entry": {
                 "timestamp": position.entry_timestamp,
                 "price": float(entry_price),
@@ -180,6 +239,8 @@ def simulate_trading_strategy(
                 "index": position.exit_index,
                 "actual_return": realized_return,
             },
+            "exit_reason": position.exit_reason,
+            "predicted_return": position.predicted_return,
             "holding_period": position.holding_period,
             "profit": float(profit),
             "return": realized_return,
@@ -193,10 +254,7 @@ def simulate_trading_strategy(
         if profit > 0:
             wins += 1
 
-    for idx, predicted_close in enumerate(predictions):
-        if idx >= len(dataset.sample_indices):
-            break
-        row_index = dataset.sample_indices[idx]
+    for row_index in range(iteration_start, len(sorted_rows)):
         current_row = sorted_rows[row_index]
         current_timestamp = _to_datetime(current_row["Date"])
         current_close_forced = float(current_row["Close"])
@@ -220,13 +278,82 @@ def simulate_trading_strategy(
                 position.exit_index = row_index
                 position.exit_timestamp = current_timestamp
                 position.exit_price = current_close_forced
+                position.exit_reason = "drawdown"
                 close_position(position)
             break
 
+        # リスク制御をチェック
+        if open_positions:
+            risk_remaining: List[Position] = []
+            triggered_positions: List[Position] = []
+            for position in open_positions:
+                if position.direction == "long":
+                    position.highest_price = max(
+                        position.highest_price or current_close_forced, current_close_forced
+                    )
+                    position.lowest_price = min(
+                        position.lowest_price or current_close_forced, current_close_forced
+                    )
+                else:
+                    position.lowest_price = min(
+                        position.lowest_price or current_close_forced, current_close_forced
+                    )
+                    position.highest_price = max(
+                        position.highest_price or current_close_forced, current_close_forced
+                    )
+
+                market_exit_price = current_close_forced
+                exit_price_with_slippage = (
+                    market_exit_price * (1 - slippage)
+                    if position.direction == "long"
+                    else market_exit_price * (1 + slippage)
+                )
+
+                triggered_reason: str | None = None
+
+                if position.stop_loss is not None:
+                    if position.direction == "long":
+                        threshold = position.entry_price * (1 - position.stop_loss)
+                        if market_exit_price <= threshold:
+                            triggered_reason = "stop_loss"
+                    else:
+                        threshold = position.entry_price * (1 + position.stop_loss)
+                        if market_exit_price >= threshold:
+                            triggered_reason = "stop_loss"
+
+                if triggered_reason is None and position.trailing_stop is not None:
+                    if position.direction == "long":
+                        peak = position.highest_price or position.entry_price
+                        threshold = peak * (1 - position.trailing_stop)
+                        if market_exit_price <= threshold:
+                            triggered_reason = "trailing_stop"
+                    else:
+                        trough = position.lowest_price or position.entry_price
+                        threshold = trough * (1 + position.trailing_stop)
+                        if market_exit_price >= threshold:
+                            triggered_reason = "trailing_stop"
+
+                if triggered_reason is not None:
+                    position.exit_index = row_index
+                    position.exit_timestamp = current_timestamp
+                    position.exit_price = float(exit_price_with_slippage)
+                    position.exit_reason = triggered_reason
+                    triggered_positions.append(position)
+                else:
+                    risk_remaining.append(position)
+
+            open_positions = risk_remaining
+            for position in triggered_positions:
+                close_position(position)
+
+        if row_index not in sample_pred_map:
+            continue
+
+        predicted_close = sample_pred_map[row_index]
         if predicted_close is None:
             continue
 
-        current_close = dataset.closes[idx]
+        current_close = sample_close_map.get(row_index, current_close_forced)
         if current_close == 0:
             continue
 
@@ -266,8 +393,19 @@ def simulate_trading_strategy(
             exit_price_with_slippage = exit_price * (1 + slippage)
 
         # トレード数量を計算
-        trade_value = balance * position_fraction
-        quantity = int(trade_value / entry_price_with_slippage) if entry_price_with_slippage > 0 else 0
+        if position_fraction >= 1.0:
+            quantity = float(position_fraction)
+            required_value = entry_price_with_slippage * quantity
+            if entry_price_with_slippage <= 0 or required_value > balance:
+                quantity = 0.0
+        else:
+            trade_value = balance * position_fraction
+            if volatility_adjustment is not None and row_index < len(rolling_volatility):
+                volatility_value = rolling_volatility[row_index]
+                if volatility_value is not None and volatility_value > 0:
+                    scaling = min(1.0, volatility_adjustment / volatility_value)
+                    trade_value *= scaling
+            quantity = trade_value / entry_price_with_slippage if entry_price_with_slippage > 0 else 0.0
         if quantity <= 0:
             continue
 
@@ -281,6 +419,10 @@ def simulate_trading_strategy(
             entry_timestamp=entry_timestamp,
             exit_timestamp=exit_timestamp,
             predicted_return=float(predicted_return),
+            stop_loss=stop_loss,
+            trailing_stop=trailing_stop,
+            highest_price=current_close_forced,
+            lowest_price=current_close_forced,
         )
         open_positions.append(position)
 

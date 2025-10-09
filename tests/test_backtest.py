@@ -352,3 +352,159 @@ def test_simulate_trading_strategy_applies_slippage_to_execution(monkeypatch):
     assert trade["profit"] == pytest.approx(expected_exit_value - expected_entry_value)
     assert result["ending_balance"] == pytest.approx(initial_capital + expected_pnl)
 
+
+def _build_price(
+    day: int,
+    close: float,
+    high: float | None = None,
+    low: float | None = None,
+    open_: float | None = None,
+    volume: float = 1000.0,
+):
+    base_date = date(2023, 1, 1)
+    return {
+        "Date": base_date + timedelta(days=day),
+        "Open": open_ if open_ is not None else close,
+        "High": high if high is not None else close,
+        "Low": low if low is not None else close,
+        "Close": close,
+        "Volume": volume,
+    }
+
+
+def test_backtest_applies_stop_loss(monkeypatch):
+    prices = [
+        _build_price(0, 100.0),
+        _build_price(1, 101.0),
+        _build_price(2, 102.0),
+        _build_price(3, 103.0),
+        _build_price(4, 103.5),
+        _build_price(5, 100.0),
+        _build_price(6, 104.0),
+        _build_price(7, 106.0),
+    ]
+
+    def fake_predictions(dataset, *_, **__):
+        preds = []
+        for i, (close, _) in enumerate(zip(dataset.closes, dataset.sample_indices)):
+            if i == 0:
+                preds.append(close * 1.05)
+            else:
+                preds.append(close)
+        return preds
+
+    monkeypatch.setattr(backtest, "_generate_predictions", fake_predictions)
+
+    result = simulate_trading_strategy(
+        prices,
+        forecast_horizon=3,
+        lags=(1,),
+        rolling_windows=(),
+        cv_splits=2,
+        threshold=0.0,
+        initial_capital=1000.0,
+        position_fraction=1.0,
+        stop_loss=0.02,
+    )
+
+    trade = result["signals"][0]
+
+    assert trade["exit"]["index"] == 5
+    assert trade["exit_reason"] == "stop_loss"
+    assert trade["exit"]["price"] == pytest.approx(100.0)
+    assert trade["profit"] < 0
+
+
+def test_backtest_applies_trailing_stop(monkeypatch):
+    prices = [
+        _build_price(0, 100.0),
+        _build_price(1, 102.0),
+        _build_price(2, 105.0),
+        _build_price(3, 108.0),
+        _build_price(4, 112.0),
+        _build_price(5, 116.0),
+        _build_price(6, 120.0),
+        _build_price(7, 115.0),
+        _build_price(8, 117.0),
+        _build_price(9, 118.0),
+    ]
+
+    def fake_predictions(dataset, *_, **__):
+        preds = []
+        for i, (close, _) in enumerate(zip(dataset.closes, dataset.sample_indices)):
+            if i == 0:
+                preds.append(close * 1.05)
+            else:
+                preds.append(close)
+        return preds
+
+    monkeypatch.setattr(backtest, "_generate_predictions", fake_predictions)
+
+    result = simulate_trading_strategy(
+        prices,
+        forecast_horizon=4,
+        lags=(1,),
+        rolling_windows=(),
+        cv_splits=2,
+        threshold=0.0,
+        initial_capital=1000.0,
+        position_fraction=1.0,
+        trailing_stop=0.02,
+    )
+
+    trade = result["signals"][0]
+
+    assert trade["exit"]["index"] == 7
+    assert trade["exit_reason"] == "trailing_stop"
+    assert trade["exit"]["price"] == pytest.approx(115.0)
+    assert trade["profit"] > 0
+
+
+def test_backtest_adjusts_position_by_volatility(monkeypatch):
+    prices = [
+        _build_price(0, 100.0),
+        _build_price(1, 110.0),
+        _build_price(2, 90.0),
+        _build_price(3, 130.0),
+        _build_price(4, 131.0),
+        _build_price(5, 132.0),
+        _build_price(6, 133.0),
+    ]
+
+    def fake_predictions(dataset, *_, **__):
+        preds = []
+        for i, (close, _) in enumerate(zip(dataset.closes, dataset.sample_indices)):
+            if i == 0:
+                preds.append(close * 1.05)
+            else:
+                preds.append(close)
+        return preds
+
+    monkeypatch.setattr(backtest, "_generate_predictions", fake_predictions)
+
+    result = simulate_trading_strategy(
+        prices,
+        forecast_horizon=2,
+        lags=(1,),
+        rolling_windows=(),
+        cv_splits=2,
+        threshold=0.0,
+        initial_capital=1000.0,
+        position_fraction=1.0,
+        volatility_adjustment=0.05,
+        volatility_lookback=3,
+    )
+
+    trade = result["signals"][0]
+
+    expected_returns = [0.1, -0.1818181818, 0.4444444444]
+    mean_return = sum(expected_returns) / len(expected_returns)
+    variance = sum((r - mean_return) ** 2 for r in expected_returns) / (len(expected_returns) - 1)
+    volatility = variance**0.5
+    target = 0.05
+    entry_price = prices[3]["Close"]
+    adjusted_value = 1000.0 * min(1.0, target / volatility)
+    expected_quantity = int(adjusted_value / entry_price)
+
+    assert trade["quantity"] == expected_quantity
+

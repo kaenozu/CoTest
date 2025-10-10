@@ -58,14 +58,15 @@ def test_simulate_trading_strategy_returns_metrics(threshold):
         trade = signals[0]
         # プルリクエスト #16 のブランチの内容
         assert trade["direction"] in {"long", "short"}
-        assert trade["quantity"] == 1
+        assert trade["quantity"] > 0
         assert "entry" in trade and "exit" in trade
         assert isinstance(trade["entry"]["timestamp"], datetime)
         assert isinstance(trade["exit"]["timestamp"], datetime)
         assert isinstance(trade["entry"]["price"], float)
         assert isinstance(trade["exit"]["price"], float)
         assert isinstance(trade["profit"], float)
-        assert math.isclose(trade["quantity"], 1)
+        expected_quantity = result["initial_capital"] * 1.0 / trade["entry"]["price"]
+        assert math.isclose(trade["quantity"], expected_quantity, rel_tol=1e-6)
         # メインブランチの最新の状態の内容
         assert trade["action"] in {"buy", "sell", "hold"}
         assert "predicted_return" in trade
@@ -103,16 +104,21 @@ def test_simulate_trading_strategy_provides_trade_timing(monkeypatch):
     assert first["direction"] == "long"
     assert first["entry"]["timestamp"] < first["exit"]["timestamp"]
     assert (first["exit"]["timestamp"] - first["entry"]["timestamp"]).days == 2
-    assert math.isclose(first["profit"], 2.0, rel_tol=1e-6)
+    first_expected_profit = (first["exit"]["price"] - first["entry"]["price"]) * first["quantity"]
+    assert math.isclose(first["profit"], first_expected_profit, rel_tol=1e-6)
 
     second = signals[1]
     assert second["direction"] == "short"
     assert second["entry"]["timestamp"] >= first["exit"]["timestamp"]
-    assert math.isclose(second["profit"], -2.0, rel_tol=1e-6)
+    price_diff = second["exit"]["price"] - second["entry"]["price"]
+    second_expected_profit = -price_diff * second["quantity"]
+    assert math.isclose(second["profit"], second_expected_profit, rel_tol=1e-6)
 
     assert result["trades"] == 2
     assert math.isclose(result["win_rate"], 0.5, rel_tol=1e-6)
-    assert math.isclose(result["cumulative_return"], 0.0, abs_tol=1e-9)
+    total_profit = sum(trade["profit"] for trade in signals)
+    expected_cumulative_return = total_profit / result["initial_capital"]
+    assert math.isclose(result["cumulative_return"], expected_cumulative_return, rel_tol=1e-9)
 
 
 def test_backtest_limits_open_positions(monkeypatch):
@@ -223,8 +229,11 @@ def test_simulate_trading_strategy_handles_expensive_assets(monkeypatch):
         position_fraction=1.0,
     )
 
-    assert result["trades"] == 0
-    assert result["signals"] == []
+    assert result["trades"] == len(result["signals"]) == 1
+    trade = result["signals"][0]
+    assert trade["quantity"] < 1, "高額資産でも分割取得で取引できる"
+    entry_cost = trade["quantity"] * trade["entry"]["price"]
+    assert math.isclose(entry_cost, 1_000_000.0, rel_tol=1e-6)
 
 
 def test_simulate_trading_strategy_accounts_for_position_and_fees(monkeypatch):

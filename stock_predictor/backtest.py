@@ -272,10 +272,7 @@ def simulate_trading_strategy(
         if entry_price_with_slippage <= 0:
             continue
 
-        if initial_capital >= 1_000_000.0 and max_drawdown_limit is None:
-            quantity = 1.0
-        else:
-            quantity = trade_value / entry_price_with_slippage
+        quantity = trade_value / entry_price_with_slippage
 
         if quantity <= 0:
             continue
